@@ -91,16 +91,20 @@ def run_benchmark(
     try:
         from emosense.backend.inference import ModelManager
 
-        config_path = Path(__file__).resolve().parent.parent / "emosense" / "config" / "models.yaml"
-        if not config_path.exists():
-            config_path = Path(__file__).resolve().parent.parent / "config" / "models.yaml"
-        if not config_path.exists():
+        base = Path(__file__).resolve().parent.parent
+        candidates = [
+            base / "emosense" / "config" / "models.yaml",
+            base / "config" / "models.yaml",
+        ]
+        config_path = next((p for p in candidates if p.exists()), None)
+        if config_path is None:
             logger.warning("No model config found; running synthetic benchmark")
             return _synthetic_benchmark(X_de, n_warmup, n_measure, output_path)
 
+        logger.info("Using config: %s", config_path)
         manager = ModelManager(str(config_path))
-    except Exception:
-        logger.warning("Could not load ModelManager; running synthetic benchmark")
+    except Exception as exc:
+        logger.warning("Could not load ModelManager: %s; running synthetic benchmark", exc)
         return _synthetic_benchmark(X_de, n_warmup, n_measure, output_path)
 
     for model_name in manager.get_model_names():
@@ -116,7 +120,14 @@ def run_benchmark(
             continue
 
         times: list[float] = []
-        x = torch.FloatTensor(X_de)
+
+        in_feat = getattr(model, "_in_features", None)
+        if in_feat and in_feat != X_de.shape[1] * X_de.shape[2]:
+            model_de = np.random.randn(n_measure, in_feat).astype(np.float32)
+        else:
+            model_de = X_de.reshape(X_de.shape[0], -1) if X_de.ndim > 2 else X_de
+
+        x = torch.FloatTensor(model_de)
 
         with torch.no_grad():
             for _ in range(n_warmup):
@@ -126,7 +137,7 @@ def run_benchmark(
                     break
 
             for i in range(n_measure):
-                idx = i % len(X_de)
+                idx = i % len(model_de)
                 t0 = time.perf_counter()
                 try:
                     model(x[idx:idx + 1])

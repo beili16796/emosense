@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 DEAP_EEG_CHANNELS: list[str] = [
     "Fp1", "AF3", "F3", "F7", "FC5", "FC1", "C3", "T7",
     "CP5", "CP1", "P3", "P7", "PO3", "O1", "Oz", "Pz",
-    "Fp2", "AF4", "F4", "F8", "FC6", "FC2", "C4", "T8",
-    "CP6", "CP2", "P4", "P8", "PO4", "O2", "Fz", "Cz",
+    "Fp2", "AF4", "Fz", "F4", "F8", "FC6", "FC2", "Cz",
+    "C4", "T8", "CP6", "CP2", "P4", "P8", "PO4", "O2",
 ]
 
-SEED_CHANNELS_62: list[str] = [
+SEED_62_CHANNELS: list[str] = [
     "FP1", "FPZ", "FP2", "AF3", "AF4", "F7", "F5", "F3", "F1",
     "FZ", "F2", "F4", "F6", "F8", "FT7", "FC5", "FC3", "FC1",
     "FCZ", "FC2", "FC4", "FC6", "FT8", "T7", "C5", "C3", "C1",
@@ -31,6 +31,9 @@ SEED_CHANNELS_62: list[str] = [
     "PZ", "P2", "P4", "P6", "P8", "PO7", "PO5", "PO3", "POZ",
     "PO4", "PO6", "PO8", "CB1", "O1", "OZ", "O2", "CB2",
 ]
+
+# Keep backward-compatible alias
+SEED_CHANNELS_62 = SEED_62_CHANNELS
 
 
 class FileParser:
@@ -56,24 +59,40 @@ class FileParser:
 
         Returns:
             Parsed data dict with keys: ``eeg``, ``gsr``, ``ecg``, ``labels``,
-            ``fs``, ``ch_names``, ``format``, and optionally ``pre_extracted``.
+            ``fs``, ``ch_names``, ``format``, ``n_eeg_channels``,
+            and optionally ``pre_extracted``.
 
         Raises:
+            FileNotFoundError: If the file does not exist.
             ValueError: If the file format is not supported.
+            RuntimeError: If parsing fails for any other reason.
         """
+        filepath = Path(filepath)
+        if not filepath.exists():
+            raise FileNotFoundError(f"File not found: {filepath}")
+
         suffix = filepath.suffix.lower()
         if suffix not in cls.SUPPORTED_FORMATS:
             raise ValueError(
-                f"Unsupported file format: {suffix}. "
-                f"Supported: {list(cls.SUPPORTED_FORMATS.keys())}"
+                f"Unsupported format '{suffix}'. "
+                f"Supported: {sorted(cls.SUPPORTED_FORMATS.keys())}\n"
+                "Tip: DEAP preprocessed = .dat, SEED/SEED-V = .mat, custom = .csv"
             )
-        method = getattr(cls, cls.SUPPORTED_FORMATS[suffix])
-        result = method(filepath)
+        try:
+            result = getattr(cls, cls.SUPPORTED_FORMATS[suffix])(filepath)
+        except (FileNotFoundError, ValueError):
+            raise
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to parse {filepath.name}: {e}\n"
+                "If this is DEAP, ensure you downloaded the 'preprocessed' version."
+            ) from e
+
         logger.info(
             "Parsed %s: format=%s, eeg_shape=%s",
             filepath.name,
             result["format"],
-            result.get("eeg", np.empty(0)).shape if "eeg" in result else "N/A",
+            result.get("eeg", np.empty(0)).shape if result.get("eeg") is not None else "N/A",
         )
         return result
 
@@ -94,7 +113,7 @@ class FileParser:
         data = np.asarray(raw["data"], dtype=np.float32)    # (40, 40, 8064)
         labels = np.asarray(raw["labels"], dtype=np.float32)  # (40, 4)
 
-        baseline_samples = 3 * 128
+        baseline_samples = 3 * 128  # 384
         eeg = data[:, :32, baseline_samples:]
         gsr = data[:, 36:37, baseline_samples:]
         ecg = data[:, 38:39, baseline_samples:]
@@ -109,6 +128,7 @@ class FileParser:
             "fs": 128,
             "ch_names": list(DEAP_EEG_CHANNELS),
             "format": "deap_dat",
+            "n_eeg_channels": 32,
             "pre_extracted": False,
         }
 
@@ -120,30 +140,67 @@ class FileParser:
         """
         import scipy.io
 
-        mat = scipy.io.loadmat(str(filepath))
+        mat = scipy.io.loadmat(str(filepath), squeeze_me=True)
 
         if "de_LDS" in mat:
             de_data = mat["de_LDS"]
+            if de_data.dtype == object:
+                de_list = []
+                for i in range(len(de_data)):
+                    cell = de_data[i]
+                    if cell.ndim == 2:
+                        de_list.append(cell.T.reshape(-1, cell.shape[0], 1) if cell.shape[1] < cell.shape[0]
+                                       else cell.reshape(-1, cell.shape[0], cell.shape[1] // cell.shape[0])
+                                       if cell.shape[0] == 62 else cell.T[np.newaxis])
+                    else:
+                        de_list.append(cell if cell.ndim == 3 else cell[np.newaxis])
+                try:
+                    de_arr = np.concatenate(
+                        [d.reshape(-1, 62, 5) if d.shape[-1] == 5 or d.shape[1] == 62
+                         else np.transpose(d, (2, 0, 1)) for d in de_list],
+                        axis=0,
+                    )
+                except (ValueError, IndexError):
+                    de_arr = np.concatenate(
+                        [d.reshape(-1, d.shape[-2] if d.ndim >= 2 else 62, 5) for d in de_list],
+                        axis=0,
+                    )
+            else:
+                if de_data.ndim == 3:
+                    de_arr = np.transpose(de_data, (2, 0, 1))  # → (n_samples, 62, 5)
+                else:
+                    de_arr = de_data
+
             labels_raw = mat.get("label", mat.get("labels", None))
-            labels = np.asarray(labels_raw).flatten() if labels_raw is not None else None
+            if labels_raw is not None:
+                labels = np.asarray(labels_raw).flatten().astype(int)
+            else:
+                labels = np.zeros(len(de_arr), dtype=int)
+
             return {
-                "eeg_de": de_data,
-                "eeg": np.empty((0, 62, 0), dtype=np.float32),
+                "eeg_de": de_arr.astype(np.float32),
+                "eeg": None,
+                "gsr": None,
+                "ecg": None,
                 "labels": labels,
                 "fs": 200,
-                "ch_names": list(SEED_CHANNELS_62),
+                "ch_names": list(SEED_62_CHANNELS),
                 "format": "seed_mat_de",
+                "n_eeg_channels": 62,
                 "pre_extracted": True,
             }
 
         eeg_key = next(
-            (k for k in mat if k.startswith("eeg") or k.startswith("EEG")),
+            (k for k in mat if not k.startswith("_")
+             and hasattr(mat[k], "shape")
+             and mat[k].ndim >= 2),
             None,
         )
         if eeg_key is None:
             non_private = [k for k in mat if not k.startswith("_")]
             raise ValueError(
-                f"Cannot find EEG data in {filepath.name}. Found keys: {non_private}"
+                f"Cannot find EEG data in {filepath.name}. "
+                f"Keys: {non_private}"
             )
 
         eeg = np.asarray(mat[eeg_key], dtype=np.float32)
@@ -151,14 +208,17 @@ class FileParser:
             eeg = eeg[np.newaxis, :, :]
 
         labels_raw = mat.get("label", mat.get("labels", None))
-        labels = np.asarray(labels_raw).flatten() if labels_raw is not None else None
+        labels = np.asarray(labels_raw).flatten().astype(int) if labels_raw is not None else np.array([0], dtype=int)
 
         return {
             "eeg": eeg,
+            "gsr": None,
+            "ecg": None,
             "labels": labels,
             "fs": 200,
-            "ch_names": list(SEED_CHANNELS_62),
+            "ch_names": list(SEED_62_CHANNELS),
             "format": "seed_mat_raw",
+            "n_eeg_channels": 62,
             "pre_extracted": False,
         }
 
@@ -168,19 +228,33 @@ class FileParser:
         import pandas as pd
 
         df = pd.read_csv(filepath)
-        ts = df.iloc[:, 0].values
-        dt = np.diff(ts)
-        fs = int(round(1.0 / np.median(dt))) if len(dt) > 0 else 128
+        if df.shape[1] < 2:
+            raise ValueError(
+                "CSV must have at least 2 columns: timestamp + at least 1 channel. "
+                f"Got {df.shape[1]} columns."
+            )
 
-        data = df.iloc[:, 1:].values.T.astype(np.float32)
-        eeg = data[np.newaxis, :, :]
+        ts = df.iloc[:, 0].values.astype(float)
+        sigs = df.iloc[:, 1:].values.T.astype(np.float32)
+
+        diffs = np.diff(ts)
+        if len(diffs) == 0 or np.std(diffs) > 0.1 * np.mean(np.abs(diffs)):
+            fs = 128
+            logger.warning("Irregular timestamps detected; assuming fs=128 Hz")
+        else:
+            fs = int(round(1.0 / np.mean(diffs)))
+
+        eeg = sigs[np.newaxis, :, :]  # (1 trial, n_channels, n_samples)
 
         return {
             "eeg": eeg,
-            "labels": None,
+            "gsr": None,
+            "ecg": None,
+            "labels": np.array([0]),
             "fs": fs,
-            "ch_names": list(df.columns[1:]),
+            "ch_names": [str(c) for c in df.columns[1:]],
             "format": "csv",
+            "n_eeg_channels": sigs.shape[0],
             "pre_extracted": False,
         }
 
@@ -197,9 +271,12 @@ class FileParser:
 
         return {
             "eeg": eeg,
+            "gsr": None,
+            "ecg": None,
             "labels": None,
             "fs": int(raw.info["sfreq"]),
             "ch_names": ch_names,
             "format": "bdf",
+            "n_eeg_channels": len(ch_names),
             "pre_extracted": False,
         }

@@ -5,6 +5,7 @@ models:
     dataset: DEAP
     modalities: [eeg]
     n_classes: 2
+    trained_label: valence
     params:
       n_classes: 2
       input_type: de
@@ -20,6 +21,7 @@ models:
     dataset: DEAP
     modalities: [eeg]
     n_classes: 2
+    trained_label: valence
     params:
       n_classes: 2
       n_channels: 32
@@ -32,12 +34,13 @@ models:
   - name: Transformer-MM
     class: Transformer-MM
     checkpoint: checkpoints/transformer_mm_demo.pt
-    dataset: DEAP
-    modalities: [eeg, gsr, ecg]
-    n_classes: 2
+    dataset: SEED-V
+    modalities: [eeg]
+    n_classes: 5
+    trained_label: five_class
     params:
-      n_classes: 2
-      n_channels: 32
+      n_classes: 5
+      n_channels: 62
       n_bands: 5
       n_peripheral_feat: 8
       d_model: 64
@@ -52,6 +55,7 @@ models:
     dataset: DEAP
     modalities: [eeg, gsr]
     n_classes: 2
+    trained_label: valence
     params:
       n_classes: 2
       n_feat1: 160
@@ -67,6 +71,7 @@ models:
     dataset: DEAP
     modalities: [eeg, gsr, ecg]
     n_classes: 2
+    trained_label: arousal
     params:
       n_classes: 2
       n_feat_eeg: 160
@@ -82,6 +87,7 @@ models:
     dataset: DEAP
     modalities: [eeg]
     n_classes: 2
+    trained_label: valence
     params:
       n_classes: 2
       n_feat: 160

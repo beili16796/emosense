@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -113,6 +113,12 @@ class ModelManager:
                 "No active model. Call set_active_model() first.",
             )
         return self._models[self._active_name]
+
+    def get_active_model_axis(self) -> str:
+        """Returns 'valence', 'arousal', or 'five_class' based on config."""
+        if self._active_name and self._active_name in self._model_configs:
+            return self._model_configs[self._active_name].get("trained_label", "valence")
+        return "valence"
 
     def get_required_modalities(self, name: str | None = None) -> list[str]:
         """Return the modality list required by a model.

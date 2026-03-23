@@ -24,6 +24,7 @@ def client() -> Generator[TestClient, None, None]:
         mock_mm = MagicMock()
         mock_mm.get_model_names.return_value = ["CNN-LSTM", "DGCCA-AM"]
         mock_mm.get_active_model_name.return_value = "CNN-LSTM"
+        mock_mm.get_active_model_axis.return_value = "valence"
 
         mock_engine = MagicMock()
         mock_engine.model_manager = mock_mm
@@ -97,3 +98,34 @@ class TestSetActiveModel:
         )
         assert resp.status_code == 404
         server_mod.engine.model_manager.set_active_model.side_effect = None
+
+
+# ======================================================================
+# GET /results/latest
+# ======================================================================
+
+
+class TestResultsLatest:
+    """Tests for ``GET /results/latest``."""
+
+    def test_empty_results(self, client: TestClient) -> None:
+        resp = client.get("/results/latest?task_id=nonexistent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["results"] == []
+        assert data["next_idx"] == 0
+        assert data["is_complete"] is False
+
+    def test_results_incremental_polling(self, client: TestClient) -> None:
+        import emosense.backend.server as server_mod
+        for i in range(5):
+            server_mod.RESULTS_STORE.setdefault("test_task", []).append(
+                {"type": "inference", "window_idx": i}
+            )
+
+        r = client.get("/results/latest?task_id=test_task&since_idx=2")
+        data = r.json()
+        assert data["next_idx"] == 5
+        assert len(data["results"]) == 3
+
+        server_mod.RESULTS_STORE.pop("test_task", None)

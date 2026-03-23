@@ -262,7 +262,6 @@ def poll_updates(
 
     new_results = data.get("results", [])
     next_idx = data.get("next_idx", results_cursor)
-    is_complete = data.get("is_complete", False)
 
     inference_results = [r for r in new_results if r.get("type") == "inference"]
     if not inference_results:

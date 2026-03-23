@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -16,9 +15,7 @@ from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 from fastapi import BackgroundTasks, FastAPI, File, HTTPException, UploadFile, WebSocket
-from fastapi.responses import JSONResponse
 
 from emosense.backend.file_parser import FileParser
 from emosense.backend.processing_engine import InferenceResult, ProcessingEngine

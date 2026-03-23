@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 _BAND_NAMES: list[str] = ["delta", "theta", "alpha", "beta", "gamma"]
 BAND_IDX: dict[str, int] = {name: i for i, name in enumerate(_BAND_NAMES)}
 
-from emosense.backend.file_parser import DEAP_EEG_CHANNELS, SEED_62_CHANNELS  # noqa: E402
+from emosense.backend.file_parser import DEAP_EEG_CHANNELS  # noqa: E402
 
 try:
     import mne

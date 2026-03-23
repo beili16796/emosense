@@ -1,0 +1,17 @@
+fastapi>=0.104
+uvicorn[standard]>=0.24
+gradio>=4.0
+websockets>=12.0
+numpy>=1.24
+scipy>=1.10
+matplotlib>=3.7
+mne>=1.4
+pylsl>=1.16
+pydantic>=2.0
+torch>=2.0
+httpx>=0.25
+pyyaml>=6.0
+tqdm>=4.65
+neurokit2>=0.2
+scikit-learn>=1.2
+emokit

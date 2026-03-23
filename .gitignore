@@ -1,0 +1,28 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+
+# Virtual environments
+.venv/
+venv/
+.env
+
+# Build / packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE
+.idea/
+.vvscode/
+
+# Demo / experiment outputs
+results/
+checkpoints/
+figures/
+*.pt
+*.pth

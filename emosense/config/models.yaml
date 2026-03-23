@@ -1,0 +1,93 @@
+models:
+  - name: CNN-LSTM
+    class: CNN-LSTM
+    checkpoint: checkpoints/cnn_lstm_demo.pt
+    dataset: DEAP
+    modalities: [eeg]
+    n_classes: 2
+    params:
+      n_classes: 2
+      input_type: de
+      hidden_size: 64
+      n_layers: 2
+      dropout: 0.3
+      lr: 0.001
+      batch_size: 64
+      n_epochs: 50
+  - name: DGCNN
+    class: DGCNN
+    checkpoint: checkpoints/dgcnn_demo.pt
+    dataset: DEAP
+    modalities: [eeg]
+    n_classes: 2
+    params:
+      n_classes: 2
+      n_channels: 32
+      n_bands: 5
+      hidden_dim: 64
+      lr: 0.001
+      batch_size: 64
+      n_epochs: 50
+      lambda_reg: 0.0001
+  - name: Transformer-MM
+    class: Transformer-MM
+    checkpoint: checkpoints/transformer_mm_demo.pt
+    dataset: DEAP
+    modalities: [eeg, gsr, ecg]
+    n_classes: 2
+    params:
+      n_classes: 2
+      n_channels: 32
+      n_bands: 5
+      n_peripheral_feat: 8
+      d_model: 64
+      nhead: 4
+      n_layers: 2
+      lr: 0.001
+      batch_size: 64
+      n_epochs: 50
+  - name: BiDAE
+    class: BiDAE
+    checkpoint: checkpoints/bidae_demo.pt
+    dataset: DEAP
+    modalities: [eeg, gsr]
+    n_classes: 2
+    params:
+      n_classes: 2
+      n_feat1: 160
+      n_feat2: 3
+      lambda_recon: 0.1
+      mu_align: 0.01
+      lr: 0.001
+      batch_size: 64
+      n_epochs: 50
+  - name: DGCCA-AM
+    class: DGCCA-AM
+    checkpoint: checkpoints/dgcca_am_demo.pt
+    dataset: DEAP
+    modalities: [eeg, gsr, ecg]
+    n_classes: 2
+    params:
+      n_classes: 2
+      n_feat_eeg: 160
+      n_feat_gsr: 3
+      n_feat_ecg: 5
+      hidden_dim: 128
+      lr: 0.001
+      batch_size: 64
+      n_epochs: 50
+  - name: PR-PL
+    class: PR-PL
+    checkpoint: checkpoints/prpl_demo.pt
+    dataset: DEAP
+    modalities: [eeg]
+    n_classes: 2
+    params:
+      n_classes: 2
+      n_feat: 160
+      prototype_dim: 128
+      margin: 0.5
+      lr: 0.001
+      batch_size: 64
+      n_epochs: 50
+      lambda_pair: 0.5

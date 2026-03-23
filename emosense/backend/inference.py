@@ -98,6 +98,10 @@ class ModelManager:
         """Return names of all configured models."""
         return list(self._model_configs.keys())
 
+    def get_active_model_name(self) -> str:
+        """Return the name of the currently active model."""
+        return self._active_name or "none"
+
     def get_active_model(self) -> BaseModel:
         """Return the currently active model instance.
 

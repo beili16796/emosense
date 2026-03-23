@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  emosense:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "7860:7860"
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - EMOKIT_DATA_ROOT=/app/data

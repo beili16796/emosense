@@ -7,10 +7,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import tempfile
 import uuid
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +29,8 @@ app = FastAPI(title="EmoSense API", version="0.2.0")
 
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 RESULTS_STORE: dict[str, list[dict]] = {}
+RESULT_BUFFER: dict[str, deque] = defaultdict(lambda: deque(maxlen=500))
+COMPLETED_TASKS: dict[str, bool] = {}
 connected_clients: list[WebSocket] = []
 engine: ProcessingEngine | None = None
 
@@ -36,7 +40,9 @@ async def startup() -> None:
     """Initialise model manager and processing engine."""
     global engine
     from emosense.backend.inference import ModelManager
-    config_path = Path(__file__).resolve().parent.parent.parent / "config" / "models.yaml"
+    config_path = Path(__file__).resolve().parent.parent / "config" / "models.yaml"
+    if not config_path.exists():
+        config_path = Path(__file__).resolve().parent.parent.parent / "config" / "models.yaml"
     if config_path.exists():
         manager = ModelManager(str(config_path))
     else:
@@ -58,6 +64,8 @@ class _DummyModelManager:
         return self._active
     def get_model_names(self) -> list[str]:
         return self._names
+    def get_active_model_axis(self) -> str:
+        return "valence"
 
 
 @app.post("/upload")
@@ -83,12 +91,25 @@ async def upload_file(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(e))
 
-    eeg = parsed.get("eeg", np.empty((0, 0, 0)))
-    n_trials = eeg.shape[0] if eeg.ndim >= 1 else 0
+    file_hash = hashlib.md5(content).hexdigest()[:16]
+
+    eeg = parsed.get("eeg")
+    if eeg is not None and hasattr(eeg, "shape") and eeg.ndim >= 1:
+        n_trials = eeg.shape[0]
+    elif parsed.get("pre_extracted") and parsed.get("eeg_de") is not None:
+        de = parsed["eeg_de"]
+        n_trials = de.shape[0] if hasattr(de, "shape") else len(de)
+    else:
+        n_trials = 0
+
     fs = parsed["fs"]
     win_samples = int(window_sec * fs)
     step = int(win_samples * (1 - overlap))
-    n_samples = eeg.shape[-1] if eeg.ndim >= 3 else 0
+
+    if eeg is not None and hasattr(eeg, "shape") and eeg.ndim >= 3:
+        n_samples = eeg.shape[-1]
+    else:
+        n_samples = 0
     n_windows = max(0, (n_samples - win_samples) // step + 1) if n_samples > 0 else 0
 
     task_id = str(uuid.uuid4())[:8]
@@ -98,17 +119,28 @@ async def upload_file(
         "window_sec": window_sec,
         "overlap": overlap,
         "model_name": model_name,
+        "file_hash": file_hash,
     }
     RESULTS_STORE[task_id] = []
+    COMPLETED_TASKS[task_id] = False
 
     return {
         "task_id": task_id,
         "n_trials": n_trials,
-        "estimated_segments": n_trials * n_windows,
+        "estimated_segments": n_trials * n_windows if not parsed.get("pre_extracted") else n_trials,
         "format_detected": parsed["format"],
         "fs": fs,
         "n_channels": len(parsed.get("ch_names", [])),
+        "file_hash": file_hash,
     }
+
+
+@app.post("/upload/hash")
+async def get_file_hash(file: UploadFile = File(...)) -> dict:
+    """Compute file hash for feature cache key."""
+    content = await file.read()
+    file_hash = hashlib.md5(content).hexdigest()[:16]
+    return {"hash": file_hash, "size_bytes": len(content)}
 
 
 @app.post("/process/{task_id}")
@@ -116,6 +148,7 @@ async def start_processing(task_id: str, background_tasks: BackgroundTasks) -> d
     """Start background processing of an uploaded file."""
     if task_id not in SESSION_STORE:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    COMPLETED_TASKS[task_id] = False
     background_tasks.add_task(_run_processing, task_id)
     return {"status": "processing_started", "task_id": task_id}
 
@@ -132,14 +165,18 @@ async def _run_processing(task_id: str) -> None:
             window_sec=ctx["window_sec"],
             overlap=ctx["overlap"],
             model_name=ctx["model_name"],
+            file_hash=ctx.get("file_hash"),
         ):
             msg = _result_to_dict(result, task_id)
             RESULTS_STORE.setdefault(task_id, []).append(msg)
+            RESULT_BUFFER[task_id].append(msg)
             await _broadcast(json.dumps(msg))
 
+        COMPLETED_TASKS[task_id] = True
         await _broadcast(json.dumps({"type": "processing_complete", "task_id": task_id}))
     except Exception as e:
         logger.exception("Processing failed for task %s", task_id)
+        COMPLETED_TASKS[task_id] = True
         await _broadcast(json.dumps({"type": "error", "task_id": task_id, "message": str(e)}))
     finally:
         Path(ctx["tmp_path"]).unlink(missing_ok=True)
@@ -192,14 +229,28 @@ async def _broadcast(message: str) -> None:
 
 
 @app.get("/results/latest")
-async def get_latest_results(task_id: str | None = None) -> dict:
-    """Poll latest results for a task."""
+async def get_latest_results(
+    task_id: str | None = None,
+    since_idx: int = 0,
+) -> dict:
+    """Return buffered inference results with incremental polling.
+
+    Args:
+        task_id: current task (optional; returns all recent if None).
+        since_idx: return only results at index >= since_idx.
+
+    Returns:
+        ``{'results': [...], 'next_idx': int, 'is_complete': bool}``
+    """
     if task_id and task_id in RESULTS_STORE:
-        return {"results": RESULTS_STORE[task_id]}
-    all_results: list[dict] = []
-    for results in RESULTS_STORE.values():
-        all_results.extend(results)
-    return {"results": all_results[-50:]}
+        buf = RESULTS_STORE[task_id]
+        slice_ = buf[since_idx:]
+        return {
+            "results": slice_,
+            "next_idx": since_idx + len(slice_),
+            "is_complete": COMPLETED_TASKS.get(task_id, False),
+        }
+    return {"results": [], "next_idx": 0, "is_complete": False}
 
 
 @app.get("/models")

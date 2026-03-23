@@ -237,6 +237,7 @@ class TestModelManager:
                 dataset: DEAP
                 modalities: [eeg]
                 n_classes: 2
+                trained_label: valence
                 params:
                   n_classes: 2
               - name: MockMM
@@ -245,6 +246,7 @@ class TestModelManager:
                 dataset: DEAP
                 modalities: [eeg, gsr, ecg]
                 n_classes: 2
+                trained_label: arousal
                 params:
                   n_classes: 2
         """), encoding="utf-8")
@@ -290,6 +292,21 @@ class TestModelManager:
         mm = ModelManager(config_path=str(cfg))
         with pytest.raises(RuntimeError, match="No active model"):
             mm.get_active_model()
+
+    def test_get_active_model_name(self, tmp_path: Path) -> None:
+        cfg = self._write_config(tmp_path)
+        mm = ModelManager(config_path=str(cfg))
+        assert mm.get_active_model_name() == "none"
+
+    @patch("emosense.backend.inference.build_model")
+    def test_get_active_model_axis(self, mock_build: MagicMock, tmp_path: Path) -> None:
+        mock_build.return_value = MagicMock()
+        cfg = self._write_config(tmp_path)
+        mm = ModelManager(config_path=str(cfg))
+        mm.set_active_model("MockModel")
+        assert mm.get_active_model_axis() == "valence"
+        mm.set_active_model("MockMM")
+        assert mm.get_active_model_axis() == "arousal"
 
 
 # ======================================================================
@@ -403,6 +420,7 @@ class TestFileParser:
         assert "eeg" in result
         assert "labels" in result
         assert "ch_names" in result
+        assert result["n_eeg_channels"] == 32
 
     def test_parse_deap_dat_eeg_shape(self, tmp_path: Path) -> None:
         dat = self._make_deap_dat(tmp_path)
@@ -438,3 +456,91 @@ class TestFileParser:
         assert ".mat" in FileParser.SUPPORTED_FORMATS
         assert ".csv" in FileParser.SUPPORTED_FORMATS
         assert ".bdf" in FileParser.SUPPORTED_FORMATS
+
+    def test_parse_missing_file(self) -> None:
+        with pytest.raises(FileNotFoundError):
+            FileParser.parse(Path("/nonexistent/file.dat"))
+
+    def test_parse_csv_mock(self, tmp_path: Path) -> None:
+        import pandas as pd
+        t = np.linspace(0, 10, 1280)
+        data = {f"ch{i}": np.random.randn(1280) for i in range(4)}
+        df = pd.DataFrame({"time": t, **data})
+        path = tmp_path / "signal.csv"
+        df.to_csv(path, index=False)
+
+        result = FileParser.parse(path)
+        assert result["format"] == "csv"
+        assert result["eeg"].shape[1] == 4
+        assert result["fs"] == 128
+        assert result["n_eeg_channels"] == 4
+
+    def test_parse_deap_dat_mock(self, tmp_path: Path) -> None:
+        data = np.random.randn(40, 40, 8064).astype(np.float32)
+        labels = np.ones((40, 4), dtype=np.float32) * 6
+        path = tmp_path / "s01.dat"
+        with open(path, "wb") as f:
+            pickle.dump({"data": data, "labels": labels}, f)
+
+        result = FileParser.parse(path)
+        assert result["format"] == "deap_dat"
+        assert result["eeg"].shape == (40, 32, 7680)
+        assert result["gsr"].shape == (40, 1, 7680)
+        assert result["fs"] == 128
+        assert result["n_eeg_channels"] == 32
+        assert set(result["labels"].tolist()).issubset({0, 1})
+
+
+# ======================================================================
+# ProcessingEngine (FeatureCache)
+# ======================================================================
+
+
+class TestFeatureCache:
+    """Tests for FeatureCache in ProcessingEngine."""
+
+    @staticmethod
+    def _make_mock_parsed(n_trials: int = 2) -> dict:
+        rng = np.random.default_rng(42)
+        return {
+            "eeg": rng.standard_normal((n_trials, 32, 8064 - 384)).astype(np.float32),
+            "gsr": None,
+            "ecg": None,
+            "labels": np.array([1, 0][:n_trials]),
+            "fs": 128,
+            "ch_names": [f"ch{i}" for i in range(32)],
+            "format": "deap_dat",
+            "n_eeg_channels": 32,
+            "pre_extracted": False,
+        }
+
+    def test_feature_cache_hit(self) -> None:
+        """Second call with same file_hash must skip DE extraction."""
+        from emosense.backend.processing_engine import ProcessingEngine
+
+        mock_mm = MagicMock()
+        mock_mm.get_active_model_name.return_value = "Mock"
+        mock_mm.set_active_model = MagicMock()
+
+        import torch
+        mock_model = MagicMock()
+        mock_model.side_effect = lambda x: torch.zeros(x.shape[0], 2)
+        mock_model.get_attention_weights.return_value = None
+        mock_mm.get_active_model.return_value = mock_model
+
+        engine = ProcessingEngine(mock_mm)
+
+        call_count = {"n": 0}
+        original = engine._extract_all_windows
+
+        def counting_wrapper(*args, **kwargs):
+            call_count["n"] += 1
+            return original(*args, **kwargs)
+
+        engine._extract_all_windows = counting_wrapper
+
+        parsed = self._make_mock_parsed(1)
+        list(engine.process_file(parsed, file_hash="abc123", window_sec=4.0))
+        list(engine.process_file(parsed, file_hash="abc123", window_sec=4.0))
+
+        assert call_count["n"] == 1, "DE extraction ran twice (cache not working)"

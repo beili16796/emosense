@@ -110,6 +110,16 @@ class ModelManager:
             )
         return self._models[self._active_name]
 
+    def get_active_model_name(self) -> str:
+        """Return the name of the active model."""
+        return self._active_name or "none"
+
+    def get_active_model_axis(self) -> str:
+        """Returns 'valence', 'arousal', or 'five_class' based on config."""
+        if self._active_name and self._active_name in self._model_configs:
+            return self._model_configs[self._active_name].get("trained_label", "valence")
+        return "valence"
+
     def get_required_modalities(self, name: str | None = None) -> list[str]:
         """Return the modality list required by a model.
 

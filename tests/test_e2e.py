@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 import pickle
-import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from emosense.backend.server import app, engine, SESSION_STORE, RESULTS_STORE
+from emosense.backend.server import app, SESSION_STORE, RESULTS_STORE, COMPLETED_TASKS
 
 
 def _make_mock_deap_dat(directory: Path) -> Path:
@@ -36,6 +36,7 @@ def client():
     """Provide a TestClient for the FastAPI app."""
     SESSION_STORE.clear()
     RESULTS_STORE.clear()
+    COMPLETED_TASKS.clear()
     with TestClient(app) as c:
         yield c
 
@@ -65,7 +66,7 @@ class TestUploadEndpoint:
         assert body["n_channels"] == 32
 
     def test_unsupported_format_returns_422(
-        self, client: TestClient, tmp_path: Path
+        self, client: TestClient, tmp_path: Path,
     ) -> None:
         bad = tmp_path / "data.xyz"
         bad.write_bytes(b"garbage")
@@ -98,3 +99,64 @@ class TestWebSocket:
     def test_ws_connect(self, client: TestClient) -> None:
         with client.websocket_connect("/ws") as ws:
             ws.send_text("ping")
+
+
+class TestResultsBuffer:
+    """Tests for /results/latest with buffer and polling."""
+
+    def test_results_latest_structure(self, client: TestClient) -> None:
+        r = client.get("/results/latest?task_id=nonexistent")
+        assert r.status_code == 200
+        data = r.json()
+        assert "results" in data
+        assert "next_idx" in data
+        assert "is_complete" in data
+
+    def test_results_incremental(self, client: TestClient) -> None:
+        for i in range(5):
+            RESULTS_STORE.setdefault("buf_test", []).append(
+                {"type": "inference", "idx": i}
+            )
+
+        r = client.get("/results/latest?task_id=buf_test&since_idx=2")
+        data = r.json()
+        assert data["next_idx"] == 5
+        assert len(data["results"]) == 3
+
+        RESULTS_STORE.pop("buf_test", None)
+
+
+class TestFullPipeline:
+    """Integration tests for the full upload → process → results pipeline."""
+
+    def test_upload_deap_returns_correct_metadata(
+        self, client: TestClient, mock_dat: Path,
+    ) -> None:
+        with open(mock_dat, "rb") as f:
+            r = client.post(
+                "/upload",
+                files={"file": (mock_dat.name, f)},
+            )
+        assert r.status_code == 200
+        d = r.json()
+        assert d["format_detected"] == "deap_dat"
+        assert d["n_trials"] == 4
+        assert d["fs"] == 128
+        assert d["n_channels"] == 32
+        assert d["estimated_segments"] > 0
+
+    def test_health_endpoint(self, client: TestClient) -> None:
+        r = client.get("/health")
+        assert r.status_code == 200
+        assert r.json()["status"] == "ok"
+        assert "active_model" in r.json()
+
+    def test_unsupported_file_returns_422(
+        self, client: TestClient, tmp_path: Path,
+    ) -> None:
+        bad = tmp_path / "data.xlsx"
+        bad.write_bytes(b"\x00\x01\x02")
+        with open(bad, "rb") as f:
+            r = client.post("/upload", files={"file": ("data.xlsx", f)})
+        assert r.status_code == 422
+        assert "Unsupported" in r.json()["detail"]

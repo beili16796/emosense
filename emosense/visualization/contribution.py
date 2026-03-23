@@ -21,6 +21,7 @@ _MODALITY_COLORS: dict[str, str] = {
     "EEG": "#4C72B0",
     "GSR": "#DD8452",
     "ECG": "#55A868",
+    "Peripheral": "#DD8452",
 }
 
 
@@ -57,11 +58,18 @@ class ContributionPlot:
         fig, ax = plt.subplots(figsize=(5, 2.5), dpi=100)
 
         if weights is None:
+            unimodal_text = (
+                f"{model_name} (EEG only)\n"
+                "\u2500" * 30 + "\n"
+                "Unimodal model \u2014 contribution\n"
+                "breakdown not available.\n"
+                "Switch to DGCCA-AM for multi-\n"
+                "modal attention weights."
+            )
             ax.text(
-                0.5, 0.5,
-                "Unimodal model \u2014 no contribution\nbreakdown available",
-                ha="center", va="center", fontsize=10, color="#888888",
-                transform=ax.transAxes,
+                0.5, 0.5, unimodal_text,
+                ha="center", va="center", fontsize=9, color="#888888",
+                transform=ax.transAxes, family="monospace",
             )
             ax.set_axis_off()
         else:

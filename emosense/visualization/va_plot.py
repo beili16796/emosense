@@ -22,7 +22,21 @@ _LABEL_COLORS: dict[str, str] = {
     "Neutral": "#2E8B57",
     "Excited": "#FF8C00",
     "Angry": "#DC143C",
+    "positive/high": "#FFD700",
+    "negative/low": "#4169E1",
+    "happy": "#FFD700",
+    "sad": "#4169E1",
+    "neutral": "#2E8B57",
+    "fear": "#DC143C",
+    "disgust": "#8B4513",
 }
+
+QUADRANT_LABELS = [
+    (0.70, 0.70, "Excited/Happy", "#E8953C"),
+    (-0.70, 0.70, "Angry/Afraid", "#D63031"),
+    (-0.70, -0.70, "Sad/Bored", "#0984E3"),
+    (0.70, -0.70, "Calm/Content", "#00B894"),
+]
 
 
 class VATrajectoryPlot:
@@ -34,10 +48,14 @@ class VATrajectoryPlot:
 
     def __init__(self, history_len: int = 10) -> None:
         self._history_len = history_len
-        self._history: deque[tuple[float, float, float, str]] = deque(
+        self._trail: deque[tuple[float, float, float, str]] = deque(
             maxlen=history_len,
         )
         self._prev_fig: Figure | None = None
+
+    @property
+    def _history(self) -> deque:
+        return self._trail
 
     def update(
         self,
@@ -57,14 +75,13 @@ class VATrajectoryPlot:
         Returns:
             Matplotlib Figure with the updated plot.
         """
-        self._history.append((valence, arousal, confidence, label))
+        self._trail.append((valence, arousal, confidence, label))
 
         if self._prev_fig is not None:
             plt.close(self._prev_fig)
 
         fig, ax = plt.subplots(figsize=(5, 5), dpi=100)
 
-        # Circular grid lines at 0.5 and 1.0 radius
         for r in (0.5, 1.0):
             circle = plt.Circle(
                 (0, 0), r, fill=False,
@@ -75,45 +92,43 @@ class VATrajectoryPlot:
         ax.axhline(0, color="#cccccc", linewidth=0.5)
         ax.axvline(0, color="#cccccc", linewidth=0.5)
 
-        # Quadrant labels
-        ax.text(0.70, 0.85, "Happy", ha="center", fontsize=9, color="#888888")
-        ax.text(0.85, 0.55, "Excited", ha="center", fontsize=8, color="#888888")
-        ax.text(0.70, -0.70, "Calm", ha="center", fontsize=9, color="#888888")
-        ax.text(-0.70, -0.70, "Sad", ha="center", fontsize=9, color="#888888")
-        ax.text(-0.70, 0.70, "Angry", ha="center", fontsize=9, color="#888888")
-        ax.text(0.00, 0.05, "Neutral", ha="center", fontsize=9, color="#888888")
+        for qx, qy, qlabel, qcolor in QUADRANT_LABELS:
+            ax.text(qx, qy, qlabel, ha="center", va="center",
+                    fontsize=8, color=qcolor, fontweight="bold", alpha=0.7)
 
-        history_list = list(self._history)
+        history_list = list(self._trail)
         n = len(history_list)
-        cmap = plt.cm.Blues  # type: ignore[attr-defined]
 
-        # Trail of historical points (all except current)
         for i, (v, a, c, _lbl) in enumerate(history_list[:-1]):
             alpha = (i + 1) / n
+            size = 20 + 30 * (i / n)
             ax.scatter(
-                v, a, color=cmap(c), s=30,
+                v, a, color="steelblue", s=size,
                 alpha=alpha, edgecolors="none", zorder=2,
             )
 
-        # Current point: large star marker coloured by label
         v, a, c, lbl = history_list[-1]
         star_color = _LABEL_COLORS.get(lbl, "#808080")
         ax.scatter(
-            v, a, marker="*", s=300,
+            v, a, marker="*", s=100 + c * 200,
             color=star_color, edgecolors="black", linewidth=0.8, zorder=4,
         )
+        ax.annotate(
+            lbl, (v, a), xytext=(5, 5), textcoords="offset points",
+            fontsize=8, color=star_color, zorder=5,
+        )
 
-        # Confidence shown as circle radius
         conf_circle = plt.Circle(
-            (v, a), c * 0.2, fill=False,
-            color=star_color, linewidth=1.5, alpha=0.7, zorder=3,
+            (v, a), c * 0.15,
+            fill=False, linestyle="--",
+            color="gray", linewidth=0.5, alpha=0.4, zorder=3,
         )
         ax.add_patch(conf_circle)
 
         ax.set_xlim(-1.2, 1.2)
         ax.set_ylim(-1.2, 1.2)
-        ax.set_xlabel("Valence")
-        ax.set_ylabel("Arousal")
+        ax.set_xlabel("Valence (Unpleasant \u2190 \u2192 Pleasant)", fontsize=9)
+        ax.set_ylabel("Arousal (Calm \u2193 \u2191 Excited)", fontsize=9)
         ax.set_aspect("equal")
         ax.set_title(f"{lbl} ({c * 100:.0f}%)")
 
@@ -123,7 +138,7 @@ class VATrajectoryPlot:
 
     def reset(self) -> None:
         """Clear the point history and close any open figure."""
-        self._history.clear()
+        self._trail.clear()
         if self._prev_fig is not None:
             plt.close(self._prev_fig)
             self._prev_fig = None

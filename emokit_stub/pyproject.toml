@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emokit"
+version = "0.1.0.dev0"
+description = "EmoKit stub for local development of EmoSense"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "torch"]
+
+[tool.setuptools.packages.find]
+include = ["emokit*"]

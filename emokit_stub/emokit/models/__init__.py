@@ -65,38 +65,36 @@ class _StubModel(BaseModel):
                 axis=-1,
             )
         else:
-            flat = X
-        if flat.ndim > 2:
-            flat = flat.reshape(flat.shape[0], -1)
+            flat = X.reshape(X.shape[0], -1) if X.ndim > 1 else X
 
-        self._in_features = flat.shape[1]
+        self._in_features = flat.shape[-1]
         self._net = _SimpleNetwork(self._in_features, self._n_classes)
 
         dataset = torch.utils.data.TensorDataset(
             torch.FloatTensor(flat), torch.LongTensor(y),
         )
         loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
-        optimizer = torch.optim.Adam(self._net.parameters(), lr=0.001)
+        optimizer = torch.optim.Adam(self._net.parameters(), lr=1e-3)
         loss_fn = nn.CrossEntropyLoss()
 
         n_epochs = self._params.get("n_epochs", 3)
         self._net.train()
         for _ in range(n_epochs):
             for xb, yb in loader:
+                optimizer.zero_grad()
                 logits = self._net(xb)
                 loss = loss_fn(logits, yb)
-                optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
 
-        if isinstance(X, dict):
-            n_modalities = len(X)
-            w = np.random.dirichlet(np.ones(n_modalities)).astype(np.float32)
-            self._attention_weights = w
+        n_modalities = len(X) if isinstance(X, dict) else 1
+        if n_modalities > 1:
+            w = np.random.dirichlet(np.ones(n_modalities))
+            self._attention_weights = w.astype(np.float32)
 
     def predict_proba(self, X: Any) -> np.ndarray:
         if self._net is None:
-            return np.ones((1, self._n_classes))
+            return np.ones((1, self._n_classes)) / self._n_classes
 
         self._net.eval()
         if isinstance(X, dict):
@@ -104,14 +102,10 @@ class _StubModel(BaseModel):
                 [v.reshape(v.shape[0], -1) if v.ndim > 1 else v for v in X.values()],
                 axis=-1,
             )
+        elif isinstance(X, np.ndarray):
+            flat = X.reshape(X.shape[0], -1) if X.ndim > 1 else X[np.newaxis, :]
         else:
             flat = X
-        if isinstance(flat, np.ndarray):
-            if flat.ndim == 1:
-                flat = flat[np.newaxis]
-            if flat.ndim > 2:
-                flat = flat.reshape(flat.shape[0], -1)
-
         with torch.no_grad():
             logits = self._net(torch.FloatTensor(flat))
         return logits.numpy()
@@ -123,8 +117,9 @@ class _StubModel(BaseModel):
             "in_features": self._in_features,
             "n_classes": self._n_classes,
             "attention_weights": self._attention_weights,
-            "state_dict": self._net.state_dict() if self._net else None,
         }
+        if self._net is not None:
+            state["state_dict"] = self._net.state_dict()
         torch.save(state, path)
 
     def load(self, path: str) -> None:
@@ -132,7 +127,7 @@ class _StubModel(BaseModel):
         self._in_features = state.get("in_features")
         self._n_classes = state.get("n_classes", 2)
         self._attention_weights = state.get("attention_weights")
-        if self._in_features and state.get("state_dict"):
+        if self._in_features is not None and "state_dict" in state:
             self._net = _SimpleNetwork(self._in_features, self._n_classes)
             self._net.load_state_dict(state["state_dict"])
             self._net.eval()
@@ -146,10 +141,6 @@ class _StubModel(BaseModel):
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         return self.forward(x)
-
-    @property
-    def network(self) -> _SimpleNetwork | None:
-        return self._net
 
     def get_attention_weights(self) -> np.ndarray | None:
         return self._attention_weights

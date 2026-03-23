@@ -32,7 +32,7 @@ class DEExtractor:
             DE features of shape ``(batch, n_channels, 5)``.
         """
         if X.ndim == 2:
-            X = X[np.newaxis]
+            X = X[np.newaxis, :, :]
 
         batch, n_ch, n_samples = X.shape
         n_bands = 5
@@ -40,7 +40,7 @@ class DEExtractor:
 
         freqs = np.fft.rfftfreq(n_samples, d=1.0 / self._fs)
         fft_data = np.fft.rfft(X, axis=-1)
-        psd = np.abs(fft_data)
+        psd = np.abs(fft_data) ** 2 / n_samples
 
         for b_idx, (band_name, (lo, hi)) in enumerate(self.BANDS.items()):
             mask = (freqs >= lo) & (freqs < hi)

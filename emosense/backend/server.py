@@ -91,7 +91,7 @@ async def upload_file(
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(e))
 
-    file_hash = hashlib.md5(content).hexdigest()[:16]
+    file_hash = hashlib.sha256(content).hexdigest()[:16]
 
     eeg = parsed.get("eeg")
     if eeg is not None and hasattr(eeg, "shape") and eeg.ndim >= 1:
@@ -106,11 +106,22 @@ async def upload_file(
     win_samples = int(window_sec * fs)
     step = int(win_samples * (1 - overlap))
 
-    if eeg is not None and hasattr(eeg, "shape") and eeg.ndim >= 3:
+    if parsed.get("pre_extracted") and parsed.get("eeg_de") is not None:
+        de = parsed["eeg_de"]
+        if isinstance(de, list):
+            estimated_segments = sum(
+                t.shape[0] for t in de if hasattr(t, "shape")
+            )
+        elif hasattr(de, "shape"):
+            estimated_segments = de.shape[0]
+        else:
+            estimated_segments = 0
+    elif eeg is not None and hasattr(eeg, "shape") and eeg.ndim >= 3:
         n_samples = eeg.shape[-1]
+        n_windows = max(0, (n_samples - win_samples) // step + 1) if n_samples > 0 else 0
+        estimated_segments = n_trials * n_windows
     else:
-        n_samples = 0
-    n_windows = max(0, (n_samples - win_samples) // step + 1) if n_samples > 0 else 0
+        estimated_segments = 0
 
     task_id = str(uuid.uuid4())[:8]
     SESSION_STORE[task_id] = {
@@ -128,7 +139,7 @@ async def upload_file(
     return {
         "task_id": task_id,
         "n_trials": n_trials,
-        "estimated_segments": n_trials * n_windows if not parsed.get("pre_extracted") else n_trials,
+        "estimated_segments": estimated_segments,
         "format_detected": parsed["format"],
         "fs": fs,
         "n_channels": len(parsed.get("ch_names", [])),
@@ -140,7 +151,7 @@ async def upload_file(
 async def get_file_hash(file: UploadFile = File(...)) -> dict:
     """Compute file hash for feature cache key."""
     content = await file.read()
-    file_hash = hashlib.md5(content).hexdigest()[:16]
+    file_hash = hashlib.sha256(content).hexdigest()[:16]
     return {"hash": file_hash, "size_bytes": len(content)}
 
 
@@ -338,37 +349,6 @@ async def health_detailed() -> dict:
         result["warning"] = f"{len(model_names)} models using random weights — predictions will be meaningless"
 
     return result
-
-
-@app.post("/admin/reset")
-async def admin_reset() -> dict:
-    """Reset all session state and results."""
-    """Extended health check for UI banners and diagnostics."""
-    if engine is None:
-        return {
-            "status": "error",
-            "active_model": "none",
-            "models_loaded": 0,
-            "models_with_real_weights": 0,
-            "warning": "Engine not initialized",
-            "emokit_version": _get_emokit_version(),
-        }
-    models_info = engine.model_manager.get_model_info()
-    n_real = sum(1 for item in models_info if item.get("has_real_weights"))
-    warning = None
-    if n_real != len(models_info):
-        warning = (
-            f"{len(models_info) - n_real} models using random weights - "
-            "upload EmoKit checkpoints for meaningful predictions"
-        )
-    return {
-        "status": "ok",
-        "active_model": engine.model_manager.get_active_model_name(),
-        "models_loaded": len(models_info),
-        "models_with_real_weights": n_real,
-        "warning": warning,
-        "emokit_version": _get_emokit_version(),
-    }
 
 
 @app.post("/admin/reset")

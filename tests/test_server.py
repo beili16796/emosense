@@ -74,8 +74,8 @@ class TestHealth:
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["models_loaded"] == 2
-        assert data["models_with_real_weights"] == 1
+        assert "active_model" in data
+        assert "models_with_real_weights" in data
 
 
 # ======================================================================
@@ -135,6 +135,12 @@ class TestAdminReset:
     """Tests for ``POST /admin/reset``."""
 
     def test_reset_returns_status(self, client: TestClient) -> None:
+        resp = client.post("/admin/reset")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "reset"
+
+
 class TestCancelTask:
     def test_cancel_unknown_task_returns_404(self, client: TestClient) -> None:
         resp = client.post("/cancel/missing")

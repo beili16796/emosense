@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import torch
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +193,7 @@ def run_benchmark(
             arr = np.array(times)
             results[model_name] = {
                 "mean_ms": round(float(arr.mean()), 2),
+                "std_ms": round(float(arr.std()), 2),
                 "p50_ms": round(float(np.percentile(arr, 50)), 2),
                 "p95_ms": round(float(np.percentile(arr, 95)), 2),
                 "p99_ms": round(float(np.percentile(arr, 99)), 2),

@@ -11,7 +11,6 @@ import textwrap
 import time
 from dataclasses import fields
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -24,8 +23,6 @@ from emosense.backend.inference import (
     InferenceEngine,
     InferenceResult,
     ModelManager,
-    LABEL_MAP_VA,
-    LABEL_MAP_SEEDV,
 )
 
 

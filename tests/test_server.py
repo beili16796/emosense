@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Generator
+from typing import Generator
 from unittest.mock import MagicMock
 
 import pytest
@@ -131,6 +131,12 @@ class TestSetActiveModel:
 # ======================================================================
 
 
+class TestCancelTask:
+    def test_cancel_unknown_task_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/cancel/missing")
+        assert resp.status_code == 404
+
+
 class TestAdminReset:
     """Tests for ``POST /admin/reset``."""
 
@@ -140,14 +146,6 @@ class TestAdminReset:
         data = resp.json()
         assert data["status"] == "reset"
 
-
-class TestCancelTask:
-    def test_cancel_unknown_task_returns_404(self, client: TestClient) -> None:
-        resp = client.post("/cancel/missing")
-        assert resp.status_code == 404
-
-
-class TestAdminReset:
     def test_reset_clears_state(self, client: TestClient) -> None:
         import emosense.backend.server as server_mod
 

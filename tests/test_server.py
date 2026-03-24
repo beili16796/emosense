@@ -24,6 +24,25 @@ def client() -> Generator[TestClient, None, None]:
         mock_mm = MagicMock()
         mock_mm.get_model_names.return_value = ["CNN-LSTM", "DGCCA-AM"]
         mock_mm.get_active_model_name.return_value = "CNN-LSTM"
+        mock_mm.get_active_model_axis.return_value = "valence"
+        mock_mm.get_model_info.return_value = [
+            {
+                "name": "CNN-LSTM",
+                "modalities": ["eeg"],
+                "dataset": "DEAP",
+                "trained_label": "valence",
+                "has_real_weights": False,
+                "description": "Fast baseline",
+            },
+            {
+                "name": "DGCCA-AM",
+                "modalities": ["eeg", "gsr", "ecg"],
+                "dataset": "DEAP",
+                "trained_label": "arousal",
+                "has_real_weights": True,
+                "description": "Adaptive fusion",
+            },
+        ]
 
         mock_engine = MagicMock()
         mock_engine.model_manager = mock_mm
@@ -49,6 +68,14 @@ class TestHealth:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["active_model"] == "CNN-LSTM"
+
+    def test_detailed_health(self, client: TestClient) -> None:
+        resp = client.get("/health/detailed")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["models_loaded"] == 2
+        assert data["models_with_real_weights"] == 1
 
 
 # ======================================================================
@@ -108,6 +135,20 @@ class TestAdminReset:
     """Tests for ``POST /admin/reset``."""
 
     def test_reset_returns_status(self, client: TestClient) -> None:
+class TestCancelTask:
+    def test_cancel_unknown_task_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/cancel/missing")
+        assert resp.status_code == 404
+
+
+class TestAdminReset:
+    def test_reset_clears_state(self, client: TestClient) -> None:
+        import emosense.backend.server as server_mod
+
+        server_mod.RESULTS_STORE["dummy"] = [{"type": "inference"}]
+        server_mod.SESSION_STORE["dummy"] = {"parsed": {}}
+        server_mod.COMPLETED_TASKS["dummy"] = True
+
         resp = client.post("/admin/reset")
         assert resp.status_code == 200
         data = resp.json()
@@ -135,3 +176,37 @@ class TestHealthDetailed:
         assert data["status"] == "ok"
         assert "active_model" in data
         assert "models_with_real_weights" in data
+        assert len(server_mod.SESSION_STORE) == 0
+        assert len(server_mod.RESULTS_STORE) == 0
+        assert len(server_mod.COMPLETED_TASKS) == 0
+
+
+# ======================================================================
+# GET /results/latest
+# ======================================================================
+
+
+class TestResultsLatest:
+    """Tests for ``GET /results/latest``."""
+
+    def test_empty_results(self, client: TestClient) -> None:
+        resp = client.get("/results/latest?task_id=nonexistent")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["results"] == []
+        assert data["next_idx"] == 0
+        assert data["is_complete"] is False
+
+    def test_results_incremental_polling(self, client: TestClient) -> None:
+        import emosense.backend.server as server_mod
+        for i in range(5):
+            server_mod.RESULTS_STORE.setdefault("test_task", []).append(
+                {"type": "inference", "window_idx": i}
+            )
+
+        r = client.get("/results/latest?task_id=test_task&since_idx=2")
+        data = r.json()
+        assert data["next_idx"] == 5
+        assert len(data["results"]) == 3
+
+        server_mod.RESULTS_STORE.pop("test_task", None)

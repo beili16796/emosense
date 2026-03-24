@@ -95,6 +95,7 @@ class _StubModel(BaseModel):
     def predict_proba(self, X: Any) -> np.ndarray:
         if self._net is None:
             return np.ones((1, self._n_classes)) / self._n_classes
+
         self._net.eval()
         if isinstance(X, dict):
             flat = np.concatenate(

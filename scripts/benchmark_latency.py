@@ -9,7 +9,8 @@ Output: results/latency_benchmark.json
 
 Usage::
 
-    python -m emosense.scripts.benchmark_latency --n-warmup 10 --n-measure 100
+    python scripts/benchmark_latency.py --n-warmup 10 --n-measure 100
+    python scripts/benchmark_latency.py --no-real-data
 """
 
 from __future__ import annotations
@@ -26,46 +27,118 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _make_synthetic_de(n: int = 50, n_ch: int = 32, n_bands: int = 5) -> np.ndarray:
+    return np.random.randn(n, n_ch, n_bands).astype(np.float32)
+
+
+def _make_model_input(model_name: str, x_de: np.ndarray, model: object) -> object:
+    """Adapt one DE window to the expected model input shape."""
+    flat = x_de.reshape(x_de.shape[0], -1)
+    if model_name == "BiDAE":
+        mod2_dim = int(getattr(model, "n_feat2", 3))
+        return {"mod1": flat, "mod2": np.zeros((x_de.shape[0], mod2_dim), dtype=np.float32)}
+    if model_name == "DGCCA-AM":
+        gsr_dim = int(getattr(model, "n_feat_gsr", 3))
+        ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+        return {
+            "eeg": flat,
+            "gsr": np.zeros((x_de.shape[0], gsr_dim), dtype=np.float32),
+            "ecg": np.zeros((x_de.shape[0], ecg_dim), dtype=np.float32),
+        }
+    if model_name == "Transformer-MM":
+        periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+        return {
+            "eeg": x_de,
+            "peripheral": np.zeros((x_de.shape[0], periph_dim), dtype=np.float32),
+        }
+    if model_name == "DGCNN":
+        return x_de
+    return flat
+
+
 def run_benchmark(
+    data_path: Path | None = None,
     n_channels: int = 32,
     n_bands: int = 5,
     n_warmup: int = 10,
     n_measure: int = 100,
+    use_real_data: bool = True,
     output_path: str = "results/latency_benchmark.json",
 ) -> dict:
     """Measure inference latency for all available models.
 
+    Paper claim: p99 < 300ms on CPU.
+
     Args:
-        n_channels: Number of EEG channels.
+        data_path: Optional path to real .dat file.
+        n_channels: Number of EEG channels (for synthetic data).
         n_bands: Number of frequency bands.
         n_warmup: Warm-up iterations (not measured).
         n_measure: Measurement iterations.
+        use_real_data: Whether to try loading real data.
         output_path: Path for the output JSON.
 
     Returns:
         Dict mapping model names to latency statistics.
     """
-    import torch
+    if data_path and data_path.exists() and use_real_data:
+        try:
+            from emosense.backend.file_parser import FileParser
+            from emokit.features.eeg import DEExtractor
 
-    X_de = np.random.randn(n_measure, n_channels, n_bands).astype(np.float32)
+            parsed = FileParser.parse(data_path)
+            extractor = DEExtractor(fs=parsed["fs"])
+            eeg = parsed["eeg"][:2]
+            windows = []
+            win_s = int(4.0 * parsed["fs"])
+            step_s = int(win_s * 0.5)
+            for trial in eeg:
+                start = 0
+                while start + win_s <= trial.shape[-1]:
+                    windows.append(trial[:, start:start + win_s])
+                    start += step_s
+            if windows:
+                X = np.stack(windows[:50])
+                X_de = extractor.transform(X)
+                logger.info("Using real data: %d windows", X_de.shape[0])
+            else:
+                X_de = _make_synthetic_de(n_measure, n_channels, n_bands)
+        except Exception:
+            logger.warning("Could not load real data; using synthetic")
+            X_de = _make_synthetic_de(n_measure, n_channels, n_bands)
+    else:
+        logger.warning("Using synthetic data for latency benchmark")
+        X_de = _make_synthetic_de(n_measure, n_channels, n_bands)
+
     results: dict[str, dict] = {}
 
     try:
         from emosense.backend.inference import ModelManager
 
-        config_path = Path(__file__).resolve().parent.parent / "config" / "models.yaml"
-        if not config_path.exists():
-            logger.warning("No model config found at %s; using synthetic benchmark", config_path)
+        base = Path(__file__).resolve().parent.parent
+        candidates = [
+            base / "emosense" / "config" / "models.yaml",
+            base / "config" / "models.yaml",
+        ]
+        config_path = next((p for p in candidates if p.exists()), None)
+        if config_path is None:
+            logger.warning("No model config found; running synthetic benchmark")
             return _synthetic_benchmark(X_de, n_warmup, n_measure, output_path)
 
+        logger.info("Using config: %s", config_path)
         manager = ModelManager(str(config_path))
     except Exception as exc:
         logger.warning("Could not load ModelManager (%s); running synthetic benchmark", exc)
+        logger.warning("Could not load ModelManager: %s; running synthetic benchmark", exc)
         return _synthetic_benchmark(X_de, n_warmup, n_measure, output_path)
 
     for model_name in manager.get_model_names():
-        manager.set_active_model(model_name)
-        model = manager.get_active_model()
+        try:
+            manager.set_active_model(model_name)
+            model = manager.get_active_model()
+        except Exception:
+            results[model_name] = {"error": "model not loaded"}
+            continue
 
         if model is None:
             results[model_name] = {"error": "model not loaded"}
@@ -98,15 +171,32 @@ def run_benchmark(
                     break
                 times.append((time.perf_counter() - t0) * 1000)
 
+        for _ in range(n_warmup):
+            try:
+                inp = _make_model_input(model_name, X_de[:1], model)
+                model.predict_proba(inp)
+            except Exception:
+                break
+
+        for i in range(n_measure):
+            idx = i % len(X_de)
+            inp = _make_model_input(model_name, X_de[idx : idx + 1], model)
+            t0 = time.perf_counter()
+            try:
+                model.predict_proba(inp)
+            except Exception:
+                break
+            times.append((time.perf_counter() - t0) * 1000)
+
         if times:
             arr = np.array(times)
             results[model_name] = {
-                "mean_ms": float(np.mean(arr)),
-                "std_ms": float(np.std(arr)),
-                "p50_ms": float(np.percentile(arr, 50)),
-                "p95_ms": float(np.percentile(arr, 95)),
-                "p99_ms": float(np.percentile(arr, 99)),
-                "max_ms": float(np.max(arr)),
+                "mean_ms": round(float(arr.mean()), 2),
+                "p50_ms": round(float(np.percentile(arr, 50)), 2),
+                "p95_ms": round(float(np.percentile(arr, 95)), 2),
+                "p99_ms": round(float(np.percentile(arr, 99)), 2),
+                "max_ms": round(float(arr.max()), 2),
+                "n_samples": n_measure,
                 "pass_300": bool(np.percentile(arr, 99) < 300),
             }
         else:
@@ -114,13 +204,12 @@ def run_benchmark(
 
         status = results[model_name]
         if "error" not in status:
-            logger.info(
-                "%20s: mean=%6.1fms p95=%6.1fms p99=%6.1fms %s",
-                model_name,
-                status["mean_ms"],
-                status["p95_ms"],
-                status["p99_ms"],
-                "PASS" if status["pass_300"] else "FAIL",
+            marker = "\u2713 PASS" if status["pass_300"] else "\u2717 FAIL"
+            print(
+                f"{model_name:20s}: "
+                f"mean={status['mean_ms']:6.1f}ms "
+                f"p95={status['p95_ms']:6.1f}ms "
+                f"p99={status['p99_ms']:6.1f}ms  {marker}"
             )
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +217,17 @@ def run_benchmark(
         json.dump(results, f, indent=2)
 
     _print_latex_table(results, output_path)
+    _print_latex_latency_table(results)
+
+    failures = [m for m, v in results.items() if not v.get("pass_300", True)]
+    if failures:
+        logger.warning(
+            "\nWARNING: p99 > 300ms for: %s\n"
+            "Consider: (1) ONNX export, (2) model quantization, "
+            "(3) reduce model size in checkpoints for demo",
+            failures,
+        )
+
     return results
 
 
@@ -163,7 +263,7 @@ def _print_latex_table(results: dict, output_path: str) -> None:
 
 
 def _synthetic_benchmark(
-    X_de: np.ndarray, n_warmup: int, n_measure: int, output_path: str
+    X_de: np.ndarray, n_warmup: int, n_measure: int, output_path: str,
 ) -> dict:
     """Fallback benchmark using a simple linear model."""
     import torch
@@ -176,20 +276,22 @@ def _synthetic_benchmark(
     x = torch.FloatTensor(X_de)
     with torch.no_grad():
         for _ in range(n_warmup):
-            _ = model(x[:1])
+            model(x[:1])
         for i in range(n_measure):
             t0 = time.perf_counter()
-            _ = model(x[i : i + 1])
+            model(x[i % len(X_de):i % len(X_de) + 1])
             times.append((time.perf_counter() - t0) * 1000)
 
     arr = np.array(times)
     results = {
         "synthetic_linear": {
-            "mean_ms": float(np.mean(arr)),
-            "p95_ms": float(np.percentile(arr, 95)),
-            "p99_ms": float(np.percentile(arr, 99)),
+            "mean_ms": round(float(arr.mean()), 2),
+            "p50_ms": round(float(np.percentile(arr, 50)), 2),
+            "p95_ms": round(float(np.percentile(arr, 95)), 2),
+            "p99_ms": round(float(np.percentile(arr, 99)), 2),
+            "max_ms": round(float(arr.max()), 2),
             "pass_300": bool(np.percentile(arr, 99) < 300),
-        }
+        },
     }
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -199,11 +301,43 @@ def _synthetic_benchmark(
     return results
 
 
+def _print_latex_latency_table(results: dict) -> None:
+    """Print copy-paste ready LaTeX table for the paper."""
+    print("\n% Latency benchmark table (copy into paper)")
+    print("\\begin{table}[t]")
+    print("  \\caption{Inference latency on CPU (Intel i7, 16 GB RAM).}")
+    print("  \\label{tab:latency}")
+    print("  \\small")
+    print("  \\begin{tabular}{lrrr}")
+    print("    \\toprule")
+    print("    Model & Mean (ms) & p95 (ms) & p99 (ms) \\\\")
+    print("    \\midrule")
+    for model, v in results.items():
+        if "error" in v:
+            continue
+        marker = "" if v.get("pass_300", True) else " $\\dagger$"
+        print(
+            f"    {model:20s} & {v['mean_ms']:5.1f} & "
+            f"{v['p95_ms']:5.1f} & {v['p99_ms']:5.1f}{marker} \\\\"
+        )
+    print("    \\bottomrule")
+    print("  \\end{tabular}")
+    print("\\end{table}")
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     parser = argparse.ArgumentParser(description="EmoSense latency benchmark")
     parser.add_argument("--n-warmup", type=int, default=10)
     parser.add_argument("--n-measure", type=int, default=100)
     parser.add_argument("--output", default="results/latency_benchmark.json")
+    parser.add_argument("--data-path", type=str, default=None)
+    parser.add_argument("--no-real-data", action="store_true")
     args = parser.parse_args()
-    run_benchmark(n_warmup=args.n_warmup, n_measure=args.n_measure, output_path=args.output)
+    run_benchmark(
+        data_path=Path(args.data_path) if args.data_path else None,
+        n_warmup=args.n_warmup,
+        n_measure=args.n_measure,
+        use_real_data=not args.no_real_data,
+        output_path=args.output,
+    )

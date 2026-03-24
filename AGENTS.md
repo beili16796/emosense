@@ -45,6 +45,7 @@ python3 -m pytest tests/ -v
 ```
 
 55 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
+47 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
 
 ### Linting
 
@@ -76,3 +77,4 @@ PYTHONPATH=/workspace python3 scripts/benchmark_latency.py --n-warmup 20 --n-mea
 ```
 
 LaTeX table saved to `results/latency_benchmark.tex`.
+11 pre-existing F401 (unused import) warnings in the original code.

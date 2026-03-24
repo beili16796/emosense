@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -72,7 +72,7 @@ class ModelManager:
         self._models: dict[str, BaseModel] = {}
         self._active_name: str | None = None
 
-        self._load_config()
+        self._load_all()
 
     # ------------------------------------------------------------------
     # Public API
@@ -98,6 +98,28 @@ class ModelManager:
         """Return names of all configured models."""
         return list(self._model_configs.keys())
 
+    def is_using_real_weights(self, name: str) -> bool:
+        """Whether a configured checkpoint exists on disk."""
+        cfg = self._model_configs.get(name, {})
+        ckpt = Path(cfg.get("checkpoint", ""))
+        return ckpt.exists()
+
+    def get_model_info(self) -> list[dict[str, Any]]:
+        """Return model metadata for the UI."""
+        info = []
+        for name, cfg in self._model_configs.items():
+            info.append(
+                {
+                    "name": name,
+                    "modalities": cfg.get("modalities", ["eeg"]),
+                    "dataset": cfg.get("dataset", "unknown"),
+                    "trained_label": cfg.get("trained_label", "valence"),
+                    "has_real_weights": self.is_using_real_weights(name),
+                    "description": cfg.get("description", ""),
+                }
+            )
+        return info
+
     def get_active_model_name(self) -> str:
         """Return the name of the currently active model."""
         return self._active_name or "none"
@@ -113,6 +135,12 @@ class ModelManager:
                 "No active model. Call set_active_model() first.",
             )
         return self._models[self._active_name]
+
+    def get_active_model_axis(self) -> str:
+        """Returns 'valence', 'arousal', or 'five_class' based on config."""
+        if self._active_name and self._active_name in self._model_configs:
+            return self._model_configs[self._active_name].get("trained_label", "valence")
+        return "valence"
 
     def get_required_modalities(self, name: str | None = None) -> list[str]:
         """Return the modality list required by a model.
@@ -132,8 +160,8 @@ class ModelManager:
     # Internal
     # ------------------------------------------------------------------
 
-    def _load_config(self) -> None:
-        """Parse the YAML configuration file."""
+    def _load_all(self) -> None:
+        """Parse config and eagerly load all declared models."""
         if not self._config_path.exists():
             logger.warning("Config file not found: %s", self._config_path)
             return
@@ -148,6 +176,14 @@ class ModelManager:
             len(self._model_configs),
             self._config_path,
         )
+        for name in self._model_configs:
+            try:
+                self._build_and_load(name)
+            except Exception as exc:
+                logger.error("Failed to load %s: %s", name, exc)
+        if self._models and self._active_name is None:
+            self._active_name = next(iter(self._models))
+            logger.info("Active model: %s", self._active_name)
 
     def _build_and_load(self, name: str) -> None:
         """Instantiate a model and optionally load a checkpoint."""
@@ -168,7 +204,12 @@ class ModelManager:
                 ckpt,
             )
 
+        if getattr(model, "network", None) is not None:
+            model.network.eval()
+
         self._models[name] = model
+        if self._active_name is None:
+            self._active_name = name
 
 
 def _softmax(logits: np.ndarray) -> np.ndarray:

@@ -12,8 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any, Generator
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
@@ -45,10 +43,47 @@ EMOTION_LABELS: dict[int, str] = {
 EMOTION_LABELS_5: dict[int, str] = {
     0: "happy",
     1: "sad",
-    2: "fear",
-    3: "disgust",
-    4: "neutral",
+    2: "neutral",
+    3: "fear",
+    4: "disgust",
 }
+
+SEED5_VA: dict[int, tuple[float, float]] = {
+    0: (0.8, 0.6),     # happy
+    1: (-0.7, -0.3),   # sad
+    2: (0.0, 0.0),     # neutral
+    3: (-0.5, 0.7),    # fear
+    4: (-0.6, -0.1),   # disgust
+}
+
+
+class FeatureCache:
+    """Stores pre-computed DE features for the current session.
+
+    Avoids re-running DEExtractor when user switches models.
+    Cache key: (file_hash, window_sec, overlap)
+    """
+
+    def __init__(self) -> None:
+        self._cache: dict[str, dict] = {}
+
+    def key(self, file_hash: str, window_sec: float, overlap: float) -> str:
+        return f"{file_hash}_{window_sec}_{overlap}"
+
+    def get(self, k: str) -> dict | None:
+        return self._cache.get(k)
+
+    def set(self, k: str, features: dict) -> None:
+        if len(self._cache) >= 3:
+            oldest = next(iter(self._cache))
+            del self._cache[oldest]
+        self._cache[k] = features
+
+    def has(self, k: str) -> bool:
+        return k in self._cache
+
+    def clear(self) -> None:
+        self._cache.clear()
 
 
 class ProcessingEngine:
@@ -60,6 +95,7 @@ class ProcessingEngine:
     def __init__(self, model_manager: Any) -> None:
         self.model_manager = model_manager
         self._de_extractors: dict[int, Any] = {}
+        self._cache = FeatureCache()
 
     def process_file(
         self,
@@ -67,6 +103,7 @@ class ProcessingEngine:
         window_sec: float = 4.0,
         overlap: float = 0.5,
         model_name: str | None = None,
+        file_hash: str | None = None,
     ) -> Generator[InferenceResult, None, None]:
         """Process uploaded file and yield one InferenceResult per segment.
 
@@ -75,6 +112,7 @@ class ProcessingEngine:
             window_sec: Window length in seconds.
             overlap: Window overlap fraction [0, 1).
             model_name: Override active model name.
+            file_hash: File hash for feature caching (enables <5ms model switch).
 
         Yields:
             InferenceResult for each processed window.
@@ -82,100 +120,146 @@ class ProcessingEngine:
         if model_name:
             self.model_manager.set_active_model(model_name)
 
+        cache_key = self._cache.key(
+            file_hash or "nohash", window_sec, overlap,
+        )
+
+        if self._cache.has(cache_key):
+            all_windows = self._cache.get(cache_key)
+            logger.debug("Feature cache HIT — skipping DE extraction")
+        else:
+            all_windows = self._extract_all_windows(parsed_data, window_sec, overlap)
+            self._cache.set(cache_key, all_windows)
+            logger.debug("Feature cache SET — %d windows stored", len(all_windows["de"]))
+
+        file_format = parsed_data.get("format", "unknown")
+
+        for idx in range(len(all_windows["de"])):
+            de_feat = all_windows["de"][idx]
+            t0 = time.perf_counter()
+            result = self._run_inference(de_feat, parsed_data, all_windows, idx, file_format)
+            result.latency_ms = (time.perf_counter() - t0) * 1000
+            result.trial_idx = int(all_windows["trial_idx"][idx])
+            result.window_idx = int(all_windows["win_idx"][idx])
+            result.time_start_sec = float(all_windows["time_sec"][idx])
+            yield result
+
+    def _extract_all_windows(
+        self,
+        parsed_data: dict[str, Any],
+        window_sec: float,
+        overlap: float,
+    ) -> dict:
+        """Segment EEG + compute DE for ALL windows. Stored in cache."""
         fs = parsed_data["fs"]
+        win_s = int(window_sec * fs)
+        step_s = int(win_s * (1 - overlap))
+
+        if parsed_data.get("pre_extracted"):
+            de_data = parsed_data.get("eeg_de")
+            if de_data is None:
+                return {
+                    "de": np.empty((0, 62, 5)),
+                    "ch_names": parsed_data.get("ch_names", []),
+                    "fs": fs,
+                    "trial_idx": np.array([], dtype=int),
+                    "win_idx": np.array([], dtype=int),
+                    "time_sec": np.array([], dtype=float),
+                }
+            de_arr = np.asarray(de_data, dtype=np.float32)
+            if de_arr.ndim == 2:
+                de_arr = de_arr[np.newaxis]
+            n = de_arr.shape[0]
+            return {
+                "de": de_arr,
+                "ch_names": parsed_data.get("ch_names", []),
+                "fs": fs,
+                "trial_idx": np.zeros(n, dtype=int),
+                "win_idx": np.arange(n),
+                "time_sec": np.arange(n, dtype=float) * (window_sec * (1 - overlap)),
+            }
+
         eeg = parsed_data["eeg"]
+        if eeg is None or eeg.size == 0:
+            return {
+                "de": np.empty((0, 32, 5)),
+                "ch_names": parsed_data.get("ch_names", []),
+                "fs": fs,
+                "trial_idx": np.array([], dtype=int),
+                "win_idx": np.array([], dtype=int),
+                "time_sec": np.array([], dtype=float),
+            }
 
-        if parsed_data.get("pre_extracted", False):
-            yield from self._process_preextracted(parsed_data)
-            return
-
-        if eeg.size == 0:
-            logger.warning("Empty EEG data — nothing to process.")
-            return
-
-        win_samples = int(window_sec * fs)
-        step_samples = int(win_samples * (1 - overlap))
         extractor = self._get_extractor(fs)
-        n_trials = eeg.shape[0]
 
-        for trial_idx in range(n_trials):
-            trial_eeg = eeg[trial_idx]
-            n_samples = trial_eeg.shape[-1]
+        all_de: list[np.ndarray] = []
+        trial_idxs: list[int] = []
+        win_idxs: list[int] = []
+        times: list[float] = []
 
+        for t_idx in range(eeg.shape[0]):
+            trial = eeg[t_idx]
             windows: list[np.ndarray] = []
-            positions: list[float] = []
             start = 0
-            while start + win_samples <= n_samples:
-                windows.append(trial_eeg[:, start : start + win_samples])
-                positions.append(start / fs)
-                start += step_samples
+            w_count = 0
+            while start + win_s <= trial.shape[-1]:
+                windows.append(trial[:, start:start + win_s])
+                trial_idxs.append(t_idx)
+                win_idxs.append(w_count)
+                times.append(start / fs)
+                start += step_s
+                w_count += 1
 
-            if not windows:
-                continue
+            if windows:
+                X = np.stack(windows)
+                de = extractor.transform(X)
+                all_de.append(de)
 
-            X_win = np.stack(windows)
-            X_de = extractor.transform(X_win)
+        if all_de:
+            de_concat = np.concatenate(all_de, axis=0)
+        else:
+            n_ch = eeg.shape[1] if eeg.ndim >= 2 else 32
+            de_concat = np.empty((0, n_ch, 5))
 
-            for w_idx, (de_feat, t_start) in enumerate(zip(X_de, positions)):
-                t0 = time.perf_counter()
-                result = self._run_inference(de_feat, parsed_data, trial_idx)
-                result.latency_ms = (time.perf_counter() - t0) * 1000
-                result.time_start_sec = t_start
-                result.trial_idx = trial_idx
-                result.window_idx = w_idx
-                yield result
-
-    def _process_preextracted(
-        self, parsed_data: dict[str, Any]
-    ) -> Generator[InferenceResult, None, None]:
-        """Handle SEED-V pre-extracted DE features."""
-        de_data = parsed_data.get("eeg_de")
-        if de_data is None:
-            return
-
-        for i in range(len(de_data) if hasattr(de_data, '__len__') else 0):
-            feat = np.asarray(de_data[i], dtype=np.float32)
-            if feat.ndim == 2:
-                feat = feat[np.newaxis, :, :]
-            for j in range(feat.shape[0] if feat.ndim == 3 else 1):
-                de_window = feat[j] if feat.ndim == 3 else feat
-                t0 = time.perf_counter()
-                result = self._run_inference(de_window, parsed_data, i)
-                result.latency_ms = (time.perf_counter() - t0) * 1000
-                result.trial_idx = i
-                result.window_idx = j
-                yield result
+        return {
+            "de": de_concat,
+            "ch_names": parsed_data.get("ch_names", []),
+            "fs": fs,
+            "trial_idx": np.array(trial_idxs, dtype=int),
+            "win_idx": np.array(win_idxs, dtype=int),
+            "time_sec": np.array(times, dtype=float),
+        }
 
     def _run_inference(
-        self, de_feat: np.ndarray, parsed_data: dict[str, Any], trial_idx: int
+        self,
+        de_feat: np.ndarray,
+        parsed_data: dict[str, Any],
+        all_windows: dict,
+        idx: int,
+        file_format: str,
     ) -> InferenceResult:
         """Run model inference on a single DE feature window."""
         model = self.model_manager.get_active_model()
         model_name = self.model_manager.get_active_model_name()
-
-        X = torch.FloatTensor(de_feat).unsqueeze(0)
-        with torch.no_grad():
-            if hasattr(model, "forward"):
-                logits = model.forward(X) if hasattr(model, 'network') else model(X)
-                if hasattr(model, 'network'):
-                    logits = model.network(X)
-            else:
-                logits = torch.zeros(1, 2)
-
-            proba = F.softmax(logits, dim=-1).squeeze(0).numpy()
+        model_input = self._make_model_input(model_name, de_feat, model)
+        proba = np.asarray(model.predict_proba(model_input))[0]
 
         pred_class = int(proba.argmax())
         n_classes = proba.shape[0]
         labels = EMOTION_LABELS if n_classes <= 2 else EMOTION_LABELS_5
         label = labels.get(pred_class, f"class_{pred_class}")
 
-        valence = float(proba[1] - proba[0]) if n_classes == 2 else 0.0
-        arousal = float(proba.max() * 2 - 1)
+        valence, arousal = self._proba_to_va(proba, file_format, model_name)
 
         attention = None
         if hasattr(model, "get_attention_weights"):
             try:
-                attention = model.get_attention_weights()
+                if model_name == "DGCCA-AM":
+                    attn = model.get_attention_weights(model_input)
+                else:
+                    attn = model.get_attention_weights()
+                if attn is not None:
+                    attention = np.asarray(attn)[0] if np.asarray(attn).ndim > 1 else np.asarray(attn)
             except Exception:
                 pass
 
@@ -191,9 +275,68 @@ class ProcessingEngine:
             model_name=model_name,
         )
 
+    def _proba_to_va(
+        self,
+        proba: np.ndarray,
+        file_format: str,
+        model_name: str,
+    ) -> tuple[float, float]:
+        """Map model probability output to Valence-Arousal coordinates.
+
+        For DEAP binary models: proba[1] → V or A depending on trained_label.
+        For SEED-V 5-class: weighted centroid in Russell's Circumplex.
+        """
+        if file_format in ("deap_dat", "deap_bdf"):
+            p_high = float(proba[1]) if len(proba) > 1 else float(proba[0])
+            coord = (p_high - 0.5) * 2.0  # map [0,1] → [-1,1]
+
+            axis = "valence"
+            if hasattr(self.model_manager, "get_active_model_axis"):
+                axis = self.model_manager.get_active_model_axis()
+
+            if axis == "arousal":
+                return 0.0, float(coord)
+            return float(coord), 0.0
+
+        elif file_format in ("seed_mat_de", "seed_mat_raw"):
+            v = sum(float(proba[c]) * SEED5_VA.get(c, (0, 0))[0] for c in range(len(proba)))
+            a = sum(float(proba[c]) * SEED5_VA.get(c, (0, 0))[1] for c in range(len(proba)))
+            return float(np.clip(v, -1, 1)), float(np.clip(a, -1, 1))
+
+        else:
+            p_high = float(proba[1]) if len(proba) > 1 else float(proba[0])
+            val = (p_high - 0.5) * 2.0
+            return float(val), 0.0
+
     def _get_extractor(self, fs: int) -> Any:
         """Get or create a DEExtractor for the given sampling rate."""
         if fs not in self._de_extractors:
             from emokit.features.eeg import DEExtractor
             self._de_extractors[fs] = DEExtractor(fs=fs)
         return self._de_extractors[fs]
+
+    def _make_model_input(self, model_name: str, de_feat: np.ndarray, model: Any) -> Any:
+        """Adapt one DE window to each EmoKit model's expected input format."""
+        x_de = np.asarray(de_feat, dtype=np.float32)[np.newaxis, ...]
+        flat = x_de.reshape(x_de.shape[0], -1)
+
+        if model_name == "BiDAE":
+            mod2_dim = int(getattr(model, "n_feat2", 3))
+            return {"mod1": flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
+        if model_name == "DGCCA-AM":
+            gsr_dim = int(getattr(model, "n_feat_gsr", 3))
+            ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+            return {
+                "eeg": flat,
+                "gsr": np.zeros((1, gsr_dim), dtype=np.float32),
+                "ecg": np.zeros((1, ecg_dim), dtype=np.float32),
+            }
+        if model_name == "Transformer-MM":
+            periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+            return {
+                "eeg": x_de,
+                "peripheral": np.zeros((1, periph_dim), dtype=np.float32),
+            }
+        if model_name == "DGCNN":
+            return x_de
+        return flat

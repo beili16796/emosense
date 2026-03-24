@@ -22,9 +22,9 @@ Use `gradio==4.42.0` and `huggingface_hub<0.25` for compatibility. Additionally,
 
 The backend resolves `config/models.yaml` relative to the repo root, but the actual file is at `emosense/config/models.yaml`. A symlink `config -> emosense/config` is needed at the workspace root.
 
-### Missing `get_active_model_name()` method
+### Realistic demo data
 
-`ModelManager` in `emosense/backend/inference.py` is missing a `get_active_model_name()` method that `server.py` and `processing_engine.py` call. The method was added during setup.
+Use `demo_data/test_deap_realistic.mat` and `demo_data/test_seedv_realistic.npz` for meaningful visualisations (frontal asymmetry, emotion-template DE). Generate with `python3 scripts/create_test_mat.py --format deap --realistic --output demo_data/test_deap_realistic.mat`.
 
 ### Running the application
 
@@ -44,7 +44,7 @@ python3 scripts/generate_demo_checkpoints.py
 python3 -m pytest tests/ -v
 ```
 
-94 pass, 12 skip, 2 pre-existing failures (`test_get_active_model_name` expects "none" but model auto-loads; `test_latency_sub_300ms_p99` missing `import torch` in benchmark script). The `tests/test_server.py` file has a syntax error (empty method body at line 137) and is excluded from collection; run with `--ignore=tests/test_server.py` to avoid the collection error.
+107 pass, 12 skip, 0 failures. All tests pass cleanly.
 
 ### Linting
 
@@ -52,7 +52,7 @@ python3 -m pytest tests/ -v
 python3 -m ruff check emosense/ tests/
 ```
 
-Pre-existing F401 (unused import) warnings in the original code.
+0 errors or warnings after lint cleanup.
 
 ### File format support
 
@@ -76,4 +76,4 @@ PYTHONPATH=/workspace python3 scripts/benchmark_latency.py --n-warmup 20 --n-mea
 ```
 
 LaTeX table saved to `results/latency_benchmark.tex`.
-11 pre-existing F401 (unused import) warnings in the original code.
+All lint warnings have been fixed.

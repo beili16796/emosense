@@ -315,24 +315,33 @@ class ProcessingEngine:
             self._de_extractors[fs] = DEExtractor(fs=fs)
         return self._de_extractors[fs]
 
+    @staticmethod
+    def _model_param(model: Any, key: str, default: int) -> int:
+        """Read a parameter from model attribute or _params dict."""
+        val = getattr(model, key, None)
+        if val is not None:
+            return int(val)
+        params = getattr(model, "_params", {})
+        return int(params.get(key, default))
+
     def _make_model_input(self, model_name: str, de_feat: np.ndarray, model: Any) -> Any:
         """Adapt one DE window to each EmoKit model's expected input format."""
         x_de = np.asarray(de_feat, dtype=np.float32)[np.newaxis, ...]
         flat = x_de.reshape(x_de.shape[0], -1)
 
         if model_name == "BiDAE":
-            mod2_dim = int(getattr(model, "n_feat2", 3))
+            mod2_dim = self._model_param(model, "n_feat2", 3)
             return {"mod1": flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
         if model_name == "DGCCA-AM":
-            gsr_dim = int(getattr(model, "n_feat_gsr", 3))
-            ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+            gsr_dim = self._model_param(model, "n_feat_gsr", 3)
+            ecg_dim = self._model_param(model, "n_feat_ecg", 5)
             return {
                 "eeg": flat,
                 "gsr": np.zeros((1, gsr_dim), dtype=np.float32),
                 "ecg": np.zeros((1, ecg_dim), dtype=np.float32),
             }
         if model_name == "Transformer-MM":
-            periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+            periph_dim = self._model_param(model, "n_peripheral_feat", 8)
             return {
                 "eeg": x_de,
                 "peripheral": np.zeros((1, periph_dim), dtype=np.float32),

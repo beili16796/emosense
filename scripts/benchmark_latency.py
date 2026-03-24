@@ -35,19 +35,27 @@ def _make_synthetic_de(n: int = 50, n_ch: int = 32, n_bands: int = 5) -> np.ndar
 def _make_model_input(model_name: str, x_de: np.ndarray, model: object) -> object:
     """Adapt one DE window to the expected model input shape."""
     flat = x_de.reshape(x_de.shape[0], -1)
+
+    def _param(key: str, default: int) -> int:
+        val = getattr(model, key, None)
+        if val is not None:
+            return int(val)
+        params = getattr(model, "_params", {})
+        return int(params.get(key, default))
+
     if model_name == "BiDAE":
-        mod2_dim = int(getattr(model, "n_feat2", 3))
+        mod2_dim = _param("n_feat2", 3)
         return {"mod1": flat, "mod2": np.zeros((x_de.shape[0], mod2_dim), dtype=np.float32)}
     if model_name == "DGCCA-AM":
-        gsr_dim = int(getattr(model, "n_feat_gsr", 3))
-        ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+        gsr_dim = _param("n_feat_gsr", 3)
+        ecg_dim = _param("n_feat_ecg", 5)
         return {
             "eeg": flat,
             "gsr": np.zeros((x_de.shape[0], gsr_dim), dtype=np.float32),
             "ecg": np.zeros((x_de.shape[0], ecg_dim), dtype=np.float32),
         }
     if model_name == "Transformer-MM":
-        periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+        periph_dim = _param("n_peripheral_feat", 8)
         return {
             "eeg": x_de,
             "peripheral": np.zeros((x_de.shape[0], periph_dim), dtype=np.float32),
@@ -145,32 +153,7 @@ def run_benchmark(
             results[model_name] = {"error": "model not loaded"}
             continue
 
-        def _infer(m: Any, inp: torch.Tensor) -> Any:
-            try:
-                if hasattr(m, "network"):
-                    return m.network(inp)
-            except Exception:
-                pass
-            if callable(m):
-                return m(inp)
-            return None
-
         times: list[float] = []
-        with torch.no_grad():
-            x = torch.FloatTensor(X_de)
-            for _ in range(n_warmup):
-                try:
-                    _infer(model, x[:1])
-                except Exception:
-                    break
-
-            for i in range(n_measure):
-                t0 = time.perf_counter()
-                try:
-                    _infer(model, x[i : i + 1])
-                except Exception:
-                    break
-                times.append((time.perf_counter() - t0) * 1000)
 
         for _ in range(n_warmup):
             try:

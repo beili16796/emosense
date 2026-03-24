@@ -31,6 +31,20 @@ def _make_mock_deap_dat(directory: Path) -> Path:
     return path
 
 
+def _make_mock_deap_mat(directory: Path) -> Path:
+    """Create a minimal valid DEAP .mat file with synthetic data."""
+    import scipy.io
+
+    rng = np.random.default_rng(42)
+    data = rng.standard_normal((4, 40, 8064)).astype(np.float32)
+    labels = np.zeros((4, 4), dtype=np.float32)
+    labels[:, 0] = [2.0, 7.0, 3.0, 8.0]
+    labels[:, 1] = [6.0, 4.0, 8.0, 2.0]
+    path = directory / "1.mat"
+    scipy.io.savemat(str(path), {"data": data, "labels": labels})
+    return path
+
+
 @pytest.fixture()
 def client():
     """Provide a TestClient for the FastAPI app."""
@@ -44,6 +58,12 @@ def client():
 def mock_dat(tmp_path: Path) -> Path:
     """Create a mock DEAP .dat file in a temp directory."""
     return _make_mock_deap_dat(tmp_path)
+
+
+@pytest.fixture()
+def mock_mat(tmp_path: Path) -> Path:
+    """Create a mock DEAP .mat file in a temp directory."""
+    return _make_mock_deap_mat(tmp_path)
 
 
 class TestUploadEndpoint:
@@ -60,6 +80,23 @@ class TestUploadEndpoint:
         body = r.json()
         assert "task_id" in body
         assert body["format_detected"] == "deap_dat"
+        assert body["n_trials"] == 4
+        assert body["fs"] == 128
+        assert body["n_channels"] == 32
+
+    def test_upload_deap_mat_returns_metadata(
+        self, client: TestClient, mock_mat: Path
+    ) -> None:
+        with open(mock_mat, "rb") as f:
+            r = client.post(
+                "/upload",
+                files={"file": (mock_mat.name, f, "application/octet-stream")},
+                data={"window_sec": "4.0", "overlap": "0.5", "model_name": "DGCNN"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "task_id" in body
+        assert "DEAP" in body["format_detected"]
         assert body["n_trials"] == 4
         assert body["fs"] == 128
         assert body["n_channels"] == 32

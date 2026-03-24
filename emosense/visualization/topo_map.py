@@ -92,7 +92,16 @@ class TopoMapPlot:
             )
         self._current_band = band
 
-    def update(self, de_features: np.ndarray, band: str | None = None) -> Figure:
+    @property
+    def ch_names(self) -> list[str]:
+        return list(self._ch_names)
+
+    def update(
+        self,
+        de_features: np.ndarray,
+        band: str | None = None,
+        annotate_asymmetry: bool = True,
+    ) -> Figure:
         """Render a topographic map for the selected frequency band.
 
         Args:
@@ -129,6 +138,8 @@ class TopoMapPlot:
             return self._fallback_heatmap(de_features, band)
 
         ax.set_title(f"DE — {band} ({self.n_channels}ch)")
+        if annotate_asymmetry and band == "alpha":
+            self._annotate_asymmetry(ax, de_features)
         fig.tight_layout()
         self._prev_fig = fig
         return fig
@@ -144,6 +155,8 @@ class TopoMapPlot:
         ax.set_xlabel("Channel index")
         ax.set_ylabel(f"DE ({band})")
         ax.set_title(f"{band} band DE (bar chart fallback)")
+        if band == "alpha":
+            self._annotate_asymmetry(ax, de_features)
         fig.tight_layout()
         self._prev_fig = fig
         return fig
@@ -167,3 +180,33 @@ class TopoMapPlot:
     def get_band_list(self) -> list[str]:
         """Return the list of available frequency band names."""
         return list(_BAND_NAMES)
+
+    def _compute_frontal_asymmetry(self, de: np.ndarray) -> float | None:
+        """Davidson-style frontal alpha asymmetry: F4 - F3."""
+        alpha_idx = BAND_IDX["alpha"]
+        f3 = next((i for i, c in enumerate(self._ch_names) if c.upper() in ("F3", "F 3")), None)
+        f4 = next((i for i, c in enumerate(self._ch_names) if c.upper() in ("F4", "F 4")), None)
+        if f3 is None or f4 is None:
+            return None
+        return float(de[f4, alpha_idx] - de[f3, alpha_idx])
+
+    def _annotate_asymmetry(self, ax: plt.Axes, de_features: np.ndarray) -> None:
+        asym = self._compute_frontal_asymmetry(de_features)
+        if asym is None:
+            return
+        direction = "R > L" if asym > 0 else "L > R"
+        color = "#27AE60" if asym > 0 else "#2E86C1"
+        ax.text(
+            0.02,
+            0.02,
+            f"Frontal alpha asymmetry: {direction}\n(Delta DE = {asym:+.3f})",
+            transform=ax.transAxes,
+            fontsize=7.5,
+            color=color,
+            fontweight="bold",
+            bbox={
+                "boxstyle": "round,pad=0.3",
+                "facecolor": "lightyellow",
+                "alpha": 0.8,
+            },
+        )

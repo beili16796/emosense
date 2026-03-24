@@ -28,6 +28,7 @@ SESSION_STORE: dict[str, dict[str, Any]] = {}
 RESULTS_STORE: dict[str, list[dict]] = {}
 RESULT_BUFFER: dict[str, deque] = defaultdict(lambda: deque(maxlen=500))
 COMPLETED_TASKS: dict[str, bool] = {}
+CANCELLED_TASKS: dict[str, bool] = {}
 connected_clients: list[WebSocket] = []
 engine: ProcessingEngine | None = None
 
@@ -63,6 +64,8 @@ class _DummyModelManager:
         return self._names
     def get_active_model_axis(self) -> str:
         return "valence"
+    def get_model_info(self) -> list[dict[str, Any]]:
+        return []
 
 
 @app.post("/upload")
@@ -120,6 +123,7 @@ async def upload_file(
     }
     RESULTS_STORE[task_id] = []
     COMPLETED_TASKS[task_id] = False
+    CANCELLED_TASKS[task_id] = False
 
     return {
         "task_id": task_id,
@@ -146,8 +150,18 @@ async def start_processing(task_id: str, background_tasks: BackgroundTasks) -> d
     if task_id not in SESSION_STORE:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     COMPLETED_TASKS[task_id] = False
+    CANCELLED_TASKS[task_id] = False
     background_tasks.add_task(_run_processing, task_id)
     return {"status": "processing_started", "task_id": task_id}
+
+
+@app.post("/cancel/{task_id}")
+async def cancel_task(task_id: str) -> dict:
+    """Cancel an ongoing processing task."""
+    if task_id not in SESSION_STORE:
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    CANCELLED_TASKS[task_id] = True
+    return {"status": "cancelled", "task_id": task_id}
 
 
 async def _run_processing(task_id: str) -> None:
@@ -164,6 +178,11 @@ async def _run_processing(task_id: str) -> None:
             model_name=ctx["model_name"],
             file_hash=ctx.get("file_hash"),
         ):
+            if CANCELLED_TASKS.get(task_id, False):
+                logger.info("Task %s cancelled by user", task_id)
+                COMPLETED_TASKS[task_id] = True
+                await _broadcast(json.dumps({"type": "cancelled", "task_id": task_id}))
+                return
             msg = _result_to_dict(result, task_id)
             RESULTS_STORE.setdefault(task_id, []).append(msg)
             RESULT_BUFFER[task_id].append(msg)
@@ -255,6 +274,8 @@ async def list_models() -> list[dict]:
     """List available models."""
     if engine is None:
         return []
+    if hasattr(engine.model_manager, "get_model_info"):
+        return engine.model_manager.get_model_info()
     names = engine.model_manager.get_model_names()
     return [{"name": n} for n in names]
 
@@ -277,3 +298,70 @@ async def health() -> dict:
     """Health check."""
     model_name = engine.model_manager.get_active_model_name() if engine else "none"
     return {"status": "ok", "active_model": model_name}
+
+
+@app.get("/health/detailed")
+async def health_detailed() -> dict:
+    """Extended health check for UI banners and diagnostics."""
+    if engine is None:
+        return {
+            "status": "error",
+            "active_model": "none",
+            "models_loaded": 0,
+            "models_with_real_weights": 0,
+            "warning": "Engine not initialized",
+            "emokit_version": _get_emokit_version(),
+        }
+    models_info = engine.model_manager.get_model_info()
+    n_real = sum(1 for item in models_info if item.get("has_real_weights"))
+    warning = None
+    if n_real != len(models_info):
+        warning = (
+            f"{len(models_info) - n_real} models using random weights - "
+            "upload EmoKit checkpoints for meaningful predictions"
+        )
+    return {
+        "status": "ok",
+        "active_model": engine.model_manager.get_active_model_name(),
+        "models_loaded": len(models_info),
+        "models_with_real_weights": n_real,
+        "warning": warning,
+        "emokit_version": _get_emokit_version(),
+    }
+
+
+@app.post("/admin/reset")
+async def admin_reset() -> dict:
+    """Reset all session state for clean user-study transitions.
+
+    Clears result buffers, task registries, and resets the active model
+    to the default (DGCNN). Does not reload model weights.
+    """
+    from datetime import datetime, timezone
+
+    SESSION_STORE.clear()
+    RESULTS_STORE.clear()
+    RESULT_BUFFER.clear()
+    COMPLETED_TASKS.clear()
+    CANCELLED_TASKS.clear()
+
+    if engine is not None:
+        try:
+            engine.model_manager.set_active_model("DGCNN")
+        except (KeyError, AttributeError):
+            pass
+
+    logger.info("Admin reset performed")
+    return {
+        "status": "reset",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _get_emokit_version() -> str:
+    try:
+        import emokit
+
+        return getattr(emokit, "__version__", "unknown")
+    except ImportError:
+        return "not installed"

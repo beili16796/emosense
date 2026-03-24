@@ -8,6 +8,15 @@ services:
       - "7860:7860"
       - "8000:8000"
     volumes:
-      - ./data:/app/data
+      # Mount datasets for testing:
+      # - /path/to/datasets:/app/data
+      # Mount real checkpoints when available:
+      # - ./checkpoints:/app/checkpoints
+      - emosense_results:/app/results
     environment:
+      - PYTHONUNBUFFERED=1
       - EMOKIT_DATA_ROOT=/app/data
+    restart: unless-stopped
+
+volumes:
+  emosense_results:

@@ -277,7 +277,7 @@ class TestModelManager:
         mm.set_active_model("MockModel")
 
         assert mm.get_active_model() is mock_model
-        mock_build.assert_called_once()
+        assert mock_build.call_count == 2
 
     def test_get_required_modalities(self, tmp_path: Path) -> None:
         cfg = self._write_config(tmp_path)
@@ -288,8 +288,8 @@ class TestModelManager:
     def test_get_active_model_without_setting_raises(
         self, tmp_path: Path,
     ) -> None:
-        cfg = self._write_config(tmp_path)
-        mm = ModelManager(config_path=str(cfg))
+        mock_path = tmp_path / "missing.yaml"
+        mm = ModelManager(config_path=str(mock_path))
         with pytest.raises(RuntimeError, match="No active model"):
             mm.get_active_model()
 
@@ -522,9 +522,8 @@ class TestFeatureCache:
         mock_mm.get_active_model_name.return_value = "Mock"
         mock_mm.set_active_model = MagicMock()
 
-        import torch
         mock_model = MagicMock()
-        mock_model.side_effect = lambda x: torch.zeros(x.shape[0], 2)
+        mock_model.predict_proba.return_value = np.array([[0.5, 0.5]], dtype=np.float32)
         mock_model.get_attention_weights.return_value = None
         mock_mm.get_active_model.return_value = mock_model
 

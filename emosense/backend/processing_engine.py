@@ -12,8 +12,6 @@ from dataclasses import dataclass, field
 from typing import Any, Generator
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 
 logger = logging.getLogger(__name__)
 
@@ -243,15 +241,8 @@ class ProcessingEngine:
         """Run model inference on a single DE feature window."""
         model = self.model_manager.get_active_model()
         model_name = self.model_manager.get_active_model_name()
-
-        X = torch.FloatTensor(de_feat).unsqueeze(0)
-        with torch.no_grad():
-            if hasattr(model, "forward"):
-                logits = model(X)
-            else:
-                logits = torch.zeros(1, 2)
-
-            proba = F.softmax(logits, dim=-1).squeeze(0).numpy()
+        model_input = self._make_model_input(model_name, de_feat, model)
+        proba = np.asarray(model.predict_proba(model_input))[0]
 
         pred_class = int(proba.argmax())
         n_classes = proba.shape[0]
@@ -263,9 +254,12 @@ class ProcessingEngine:
         attention = None
         if hasattr(model, "get_attention_weights"):
             try:
-                attn = model.get_attention_weights()
+                if model_name == "DGCCA-AM":
+                    attn = model.get_attention_weights(model_input)
+                else:
+                    attn = model.get_attention_weights()
                 if attn is not None:
-                    attention = np.asarray(attn)
+                    attention = np.asarray(attn)[0] if np.asarray(attn).ndim > 1 else np.asarray(attn)
             except Exception:
                 pass
 
@@ -320,3 +314,29 @@ class ProcessingEngine:
             from emokit.features.eeg import DEExtractor
             self._de_extractors[fs] = DEExtractor(fs=fs)
         return self._de_extractors[fs]
+
+    def _make_model_input(self, model_name: str, de_feat: np.ndarray, model: Any) -> Any:
+        """Adapt one DE window to each EmoKit model's expected input format."""
+        x_de = np.asarray(de_feat, dtype=np.float32)[np.newaxis, ...]
+        flat = x_de.reshape(x_de.shape[0], -1)
+
+        if model_name == "BiDAE":
+            mod2_dim = int(getattr(model, "n_feat2", 3))
+            return {"mod1": flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
+        if model_name == "DGCCA-AM":
+            gsr_dim = int(getattr(model, "n_feat_gsr", 3))
+            ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+            return {
+                "eeg": flat,
+                "gsr": np.zeros((1, gsr_dim), dtype=np.float32),
+                "ecg": np.zeros((1, ecg_dim), dtype=np.float32),
+            }
+        if model_name == "Transformer-MM":
+            periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+            return {
+                "eeg": x_de,
+                "peripheral": np.zeros((1, periph_dim), dtype=np.float32),
+            }
+        if model_name == "DGCNN":
+            return x_de
+        return flat

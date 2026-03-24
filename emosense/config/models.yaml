@@ -1,6 +1,7 @@
 models:
   - name: CNN-LSTM
     class: CNN-LSTM
+    description: "Fast baseline: 2D conv plus bidirectional LSTM"
     checkpoint: checkpoints/cnn_lstm_demo.pt
     dataset: DEAP
     modalities: [eeg]
@@ -17,6 +18,7 @@ models:
       n_epochs: 50
   - name: DGCNN
     class: DGCNN
+    description: "Dynamic graph conv: learns electrode topology"
     checkpoint: checkpoints/dgcnn_demo.pt
     dataset: DEAP
     modalities: [eeg]
@@ -33,6 +35,7 @@ models:
       lambda_reg: 0.0001
   - name: Transformer-MM
     class: Transformer-MM
+    description: "Transformer encoder for EEG plus peripheral context"
     checkpoint: checkpoints/transformer_mm_demo.pt
     dataset: SEED-V
     modalities: [eeg]
@@ -51,6 +54,7 @@ models:
       n_epochs: 50
   - name: BiDAE
     class: BiDAE
+    description: "Bimodal autoencoder: EEG plus peripheral shared latent space"
     checkpoint: checkpoints/bidae_demo.pt
     dataset: DEAP
     modalities: [eeg, gsr]
@@ -67,6 +71,7 @@ models:
       n_epochs: 50
   - name: DGCCA-AM
     class: DGCCA-AM
+    description: "Adaptive multimodal fusion with attention weights"
     checkpoint: checkpoints/dgcca_am_demo.pt
     dataset: DEAP
     modalities: [eeg, gsr, ecg]
@@ -83,6 +88,7 @@ models:
       n_epochs: 50
   - name: PR-PL
     class: PR-PL
+    description: "Prototype plus pairwise learning for cross-subject transfer"
     checkpoint: checkpoints/prpl_demo.pt
     dataset: DEAP
     modalities: [eeg]

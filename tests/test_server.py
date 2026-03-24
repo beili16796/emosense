@@ -25,6 +25,24 @@ def client() -> Generator[TestClient, None, None]:
         mock_mm.get_model_names.return_value = ["CNN-LSTM", "DGCCA-AM"]
         mock_mm.get_active_model_name.return_value = "CNN-LSTM"
         mock_mm.get_active_model_axis.return_value = "valence"
+        mock_mm.get_model_info.return_value = [
+            {
+                "name": "CNN-LSTM",
+                "modalities": ["eeg"],
+                "dataset": "DEAP",
+                "trained_label": "valence",
+                "has_real_weights": False,
+                "description": "Fast baseline",
+            },
+            {
+                "name": "DGCCA-AM",
+                "modalities": ["eeg", "gsr", "ecg"],
+                "dataset": "DEAP",
+                "trained_label": "arousal",
+                "has_real_weights": True,
+                "description": "Adaptive fusion",
+            },
+        ]
 
         mock_engine = MagicMock()
         mock_engine.model_manager = mock_mm
@@ -50,6 +68,14 @@ class TestHealth:
         data = resp.json()
         assert data["status"] == "ok"
         assert data["active_model"] == "CNN-LSTM"
+
+    def test_detailed_health(self, client: TestClient) -> None:
+        resp = client.get("/health/detailed")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert data["models_loaded"] == 2
+        assert data["models_with_real_weights"] == 1
 
 
 # ======================================================================
@@ -98,6 +124,31 @@ class TestSetActiveModel:
         )
         assert resp.status_code == 404
         server_mod.engine.model_manager.set_active_model.side_effect = None
+
+
+class TestCancelTask:
+    def test_cancel_unknown_task_returns_404(self, client: TestClient) -> None:
+        resp = client.post("/cancel/missing")
+        assert resp.status_code == 404
+
+
+class TestAdminReset:
+    def test_reset_clears_state(self, client: TestClient) -> None:
+        import emosense.backend.server as server_mod
+
+        server_mod.RESULTS_STORE["dummy"] = [{"type": "inference"}]
+        server_mod.SESSION_STORE["dummy"] = {"parsed": {}}
+        server_mod.COMPLETED_TASKS["dummy"] = True
+
+        resp = client.post("/admin/reset")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "reset"
+        assert "timestamp" in data
+
+        assert len(server_mod.SESSION_STORE) == 0
+        assert len(server_mod.RESULTS_STORE) == 0
+        assert len(server_mod.COMPLETED_TASKS) == 0
 
 
 # ======================================================================

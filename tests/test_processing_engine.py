@@ -10,8 +10,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-import torch
-
 from emosense.backend.processing_engine import (
     FeatureCache,
     InferenceResult,
@@ -37,10 +35,10 @@ def mock_deap_parsed() -> dict:
 
 def _make_mock_engine():
     mock_mm = MagicMock()
-    mock_mm.get_active_model_name.return_value = "Mock"
+    mock_mm.get_active_model_name.return_value = "DGCNN"
     mock_mm.set_active_model = MagicMock()
     mock_model = MagicMock()
-    mock_model.side_effect = lambda x: torch.zeros(x.shape[0], 2)
+    mock_model.predict_proba.return_value = np.array([[0.5, 0.5]], dtype=np.float32)
     mock_model.get_attention_weights.return_value = None
     mock_mm.get_active_model.return_value = mock_model
     return ProcessingEngine(mock_mm)

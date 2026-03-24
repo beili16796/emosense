@@ -73,6 +73,15 @@ def _fetch_model_names() -> list[str]:
         return []
 
 
+def _fetch_models() -> list[dict[str, Any]]:
+    try:
+        resp = httpx.get(f"{BACKEND_URL}/models", timeout=3.0)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Timeline helper
 # ---------------------------------------------------------------------------
@@ -139,6 +148,11 @@ def on_file_upload(
             resp = httpx.post(
                 f"{BACKEND_URL}/upload",
                 files={"file": (str(filename).split("/")[-1], f)},
+                data={
+                    "window_sec": str(window_sec),
+                    "overlap": str(overlap),
+                    "model_name": model_name,
+                },
                 timeout=30.0,
             )
         resp.raise_for_status()
@@ -201,8 +215,48 @@ def on_model_switch(model_name: str) -> None:
         pass
 
 
-def on_reset() -> tuple[str, str, Any, Any, Any, Any, float, list, str, str, int]:
+def on_model_change(model_name: str) -> tuple[str, str]:
+    """Return markdown metadata for the selected model."""
+    on_model_switch(model_name)
+    models = {m["name"]: m for m in _fetch_models()}
+    info = models.get(model_name)
+    if not info:
+        return "Unknown model", "Status unavailable"
+    modalities = " + ".join(info.get("modalities", ["EEG"]))
+    description = info.get("description", "")
+    info_md = (
+        f"**{model_name}**  \n"
+        f"Modalities: `{modalities}`  \n"
+        f"Trained on: {info.get('dataset', '?')}  \n"
+        f"{description}"
+    )
+    status = (
+        "Trained weights loaded"
+        if info.get("has_real_weights")
+        else "Random weights - export EmoKit checkpoints for meaningful predictions"
+    )
+    return info_md, status
+
+
+def on_demo_load() -> tuple[str, Any, str, str]:
+    names = _fetch_model_names() or MODEL_NAMES_DEFAULT
+    first = names[0] if names else "DGCNN"
+    info_md, status = on_model_change(first)
+    return (
+        "Backend online" if _backend_online() else "Backend offline - waiting",
+        gr.update(choices=names, value=first),
+        info_md,
+        status,
+    )
+
+
+def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, str, str, int]:
     """Reset all state and plots."""
+    if task_id:
+        try:
+            httpx.post(f"{BACKEND_URL}/cancel/{task_id}", timeout=2.0)
+        except Exception:
+            pass
     va_plot.reset()
     contrib_plot.reset()
 
@@ -238,12 +292,12 @@ def poll_updates(
     task_id: str,
     results_cursor: int,
     current_band: str,
-) -> tuple[Any, Any, Any, Any, float, list, str, int, Any]:
+) -> tuple[Any, Any, Any, Any, float, list, str, str, int, Any]:
     """Timer callback — poll /results/latest and refresh UI."""
     if not task_id:
         return (
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
         )
 
     try:
@@ -257,7 +311,7 @@ def poll_updates(
     except Exception:
         return (
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
         )
 
     new_results = data.get("results", [])
@@ -267,7 +321,7 @@ def poll_updates(
     if not inference_results:
         return (
             gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), next_idx, gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), next_idx, gr.update(),
         )
 
     latest = inference_results[-1]
@@ -320,6 +374,11 @@ def poll_updates(
     ]
 
     pred_text = f"{label} ({confidence * 100:.1f}%)"
+    status_text = (
+        f"Complete: {len(all_inference)} windows"
+        if data.get("is_complete", False)
+        else f"Processing: {len(all_inference)} windows"
+    )
 
     last_de_state = de_features_raw
 
@@ -331,9 +390,18 @@ def poll_updates(
         progress,
         table_data,
         pred_text,
+        status_text,
         next_idx,
         last_de_state,
     )
+
+
+def on_demo_deap_preset() -> tuple[float, float, str, str]:
+    return 4.0, 0.5, "DGCNN", "Recommended: upload a DEAP .dat file"
+
+
+def on_demo_seedv_preset() -> tuple[float, float, str, str]:
+    return 4.0, 0.5, "Transformer-MM", "Recommended: upload a SEED-V .mat file"
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +451,15 @@ def create_demo() -> gr.Blocks:
                     choices=MODEL_NAMES_DEFAULT,
                     value="DGCNN",
                     interactive=True,
+                )
+                model_info_md = gr.Markdown("Select a model to see details")
+                weights_status = gr.Markdown("Waiting for backend model status")
+
+                with gr.Row():
+                    demo_deap_btn = gr.Button("Try with DEAP", size="sm")
+                    demo_seedv_btn = gr.Button("Try with SEED-V", size="sm")
+                gr.Markdown(
+                    "_Demo presets auto-configure window, overlap, and model selection._"
                 )
 
                 with gr.Row():
@@ -444,6 +521,7 @@ def create_demo() -> gr.Blocks:
                 progress_bar,
                 results_table,
                 pred_label,
+                status_box,
                 results_cursor,
                 last_de_features,
             ],
@@ -463,8 +541,9 @@ def create_demo() -> gr.Blocks:
         )
 
         model_dd.change(
-            fn=on_model_switch,
+            fn=on_model_change,
             inputs=[model_dd],
+            outputs=[model_info_md, weights_status],
         )
 
         band_radio.change(
@@ -475,6 +554,7 @@ def create_demo() -> gr.Blocks:
 
         reset_btn.click(
             fn=on_reset,
+            inputs=[uploaded_task_id],
             outputs=[
                 status_box,
                 format_display,
@@ -490,14 +570,18 @@ def create_demo() -> gr.Blocks:
             ],
         )
 
+        demo_deap_btn.click(
+            fn=on_demo_deap_preset,
+            outputs=[window_slider, overlap_slider, model_dd, status_box],
+        )
+        demo_seedv_btn.click(
+            fn=on_demo_seedv_preset,
+            outputs=[window_slider, overlap_slider, model_dd, status_box],
+        )
+
         demo.load(
-            fn=lambda: (
-                "Backend online" if _backend_online() else "Backend offline \u2014 waiting",
-                gr.update(
-                    choices=_fetch_model_names() or MODEL_NAMES_DEFAULT,
-                ),
-            ),
-            outputs=[status_box, model_dd],
+            fn=on_demo_load,
+            outputs=[status_box, model_dd, model_info_md, weights_status],
         )
 
     return demo

@@ -86,6 +86,13 @@ class TestVATrajectoryPlot:
         n_after = len(plt.get_fignums())
         assert n_after <= n_before + 1
 
+    def test_va_emotion_labels_in_annotation(self) -> None:
+        plot = VATrajectoryPlot()
+        fig = plot.update(0.7, 0.5, 0.85, "Happy")
+        texts = [t.get_text() for t in fig.findobj(plt.Text)]
+        assert any("Happy" in t for t in texts)
+        plt.close(fig)
+
 
 # ======================================================================
 # TopoMapPlot
@@ -164,6 +171,23 @@ class TestTopoMapPlot:
         assert isinstance(fig, Figure)
         plt.close(fig)
 
+    def test_frontal_asymmetry_detected_for_deap(self) -> None:
+        from emosense.visualization.topo_map import TopoMapPlot
+        from emosense.backend.file_parser import DEAP_EEG_CHANNELS
+
+        plot = TopoMapPlot(ch_names=list(DEAP_EEG_CHANNELS), fs=128)
+        de = np.random.randn(32, 5).astype(np.float32)
+        asym = plot._compute_frontal_asymmetry(de)
+        assert asym is not None
+        assert isinstance(asym, float)
+
+    def test_frontal_asymmetry_none_for_custom_channels(self) -> None:
+        from emosense.visualization.topo_map import TopoMapPlot
+
+        plot = TopoMapPlot(["Ch1", "Ch2", "Ch3", "Ch4"], fs=128)
+        de = np.random.randn(4, 5).astype(np.float32)
+        assert plot._compute_frontal_asymmetry(de) is None
+
 
 # ======================================================================
 # ContributionPlot
@@ -199,6 +223,7 @@ class TestContributionPlot:
         plot.update(np.array([0.5, 0.3, 0.2]))
         plot.reset()
         assert plot._prev_fig is None
+        assert plot._history == []
 
     def test_contribution_plot_with_weights(self) -> None:
         plot = ContributionPlot(["EEG", "GSR", "ECG"])

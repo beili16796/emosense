@@ -30,6 +30,31 @@ def _make_synthetic_de(n: int = 50, n_ch: int = 32, n_bands: int = 5) -> np.ndar
     return np.random.randn(n, n_ch, n_bands).astype(np.float32)
 
 
+def _make_model_input(model_name: str, x_de: np.ndarray, model: object) -> object:
+    """Adapt one DE window to the expected model input shape."""
+    flat = x_de.reshape(x_de.shape[0], -1)
+    if model_name == "BiDAE":
+        mod2_dim = int(getattr(model, "n_feat2", 3))
+        return {"mod1": flat, "mod2": np.zeros((x_de.shape[0], mod2_dim), dtype=np.float32)}
+    if model_name == "DGCCA-AM":
+        gsr_dim = int(getattr(model, "n_feat_gsr", 3))
+        ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+        return {
+            "eeg": flat,
+            "gsr": np.zeros((x_de.shape[0], gsr_dim), dtype=np.float32),
+            "ecg": np.zeros((x_de.shape[0], ecg_dim), dtype=np.float32),
+        }
+    if model_name == "Transformer-MM":
+        periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+        return {
+            "eeg": x_de,
+            "peripheral": np.zeros((x_de.shape[0], periph_dim), dtype=np.float32),
+        }
+    if model_name == "DGCNN":
+        return x_de
+    return flat
+
+
 def run_benchmark(
     data_path: Path | None = None,
     n_channels: int = 32,
@@ -55,8 +80,6 @@ def run_benchmark(
     Returns:
         Dict mapping model names to latency statistics.
     """
-    import torch
-
     if data_path and data_path.exists() and use_real_data:
         try:
             from emosense.backend.file_parser import FileParser
@@ -121,29 +144,22 @@ def run_benchmark(
 
         times: list[float] = []
 
-        in_feat = getattr(model, "_in_features", None)
-        if in_feat and in_feat != X_de.shape[1] * X_de.shape[2]:
-            model_de = np.random.randn(n_measure, in_feat).astype(np.float32)
-        else:
-            model_de = X_de.reshape(X_de.shape[0], -1) if X_de.ndim > 2 else X_de
+        for _ in range(n_warmup):
+            try:
+                inp = _make_model_input(model_name, X_de[:1], model)
+                model.predict_proba(inp)
+            except Exception:
+                break
 
-        x = torch.FloatTensor(model_de)
-
-        with torch.no_grad():
-            for _ in range(n_warmup):
-                try:
-                    model(x[:1])
-                except Exception:
-                    break
-
-            for i in range(n_measure):
-                idx = i % len(model_de)
-                t0 = time.perf_counter()
-                try:
-                    model(x[idx:idx + 1])
-                except Exception:
-                    break
-                times.append((time.perf_counter() - t0) * 1000)
+        for i in range(n_measure):
+            idx = i % len(X_de)
+            inp = _make_model_input(model_name, X_de[idx : idx + 1], model)
+            t0 = time.perf_counter()
+            try:
+                model.predict_proba(inp)
+            except Exception:
+                break
+            times.append((time.perf_counter() - t0) * 1000)
 
         if times:
             arr = np.array(times)

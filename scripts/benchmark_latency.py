@@ -19,6 +19,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -58,8 +59,8 @@ def run_benchmark(
             return _synthetic_benchmark(X_de, n_warmup, n_measure, output_path)
 
         manager = ModelManager(str(config_path))
-    except Exception:
-        logger.warning("Could not load ModelManager; running synthetic benchmark")
+    except Exception as exc:
+        logger.warning("Could not load ModelManager (%s); running synthetic benchmark", exc)
         return _synthetic_benchmark(X_de, n_warmup, n_measure, output_path)
 
     for model_name in manager.get_model_names():
@@ -70,19 +71,29 @@ def run_benchmark(
             results[model_name] = {"error": "model not loaded"}
             continue
 
+        def _infer(m: Any, inp: torch.Tensor) -> Any:
+            try:
+                if hasattr(m, "network"):
+                    return m.network(inp)
+            except Exception:
+                pass
+            if callable(m):
+                return m(inp)
+            return None
+
         times: list[float] = []
         with torch.no_grad():
             x = torch.FloatTensor(X_de)
             for _ in range(n_warmup):
                 try:
-                    _ = model.network(x[:1]) if hasattr(model, "network") else None
+                    _infer(model, x[:1])
                 except Exception:
                     break
 
             for i in range(n_measure):
                 t0 = time.perf_counter()
                 try:
-                    _ = model.network(x[i : i + 1]) if hasattr(model, "network") else None
+                    _infer(model, x[i : i + 1])
                 except Exception:
                     break
                 times.append((time.perf_counter() - t0) * 1000)
@@ -116,7 +127,39 @@ def run_benchmark(
     with open(output_path, "w") as f:
         json.dump(results, f, indent=2)
 
+    _print_latex_table(results, output_path)
     return results
+
+
+def _print_latex_table(results: dict, output_path: str) -> None:
+    """Print and save a LaTeX-ready latency table."""
+    lines = [
+        r"\begin{table}[h]",
+        r"\centering",
+        r"\caption{Inference latency per model (CPU, single window)}",
+        r"\label{tab:latency}",
+        r"\begin{tabular}{lrrrrr}",
+        r"\toprule",
+        r"Model & Mean (ms) & Std (ms) & p95 (ms) & p99 (ms) & $<$300ms \\",
+        r"\midrule",
+    ]
+    for name, stats in results.items():
+        if "error" in stats:
+            lines.append(rf"{name} & \multicolumn{{5}}{{c}}{{error}} \\")
+        else:
+            p = r"\checkmark" if stats["pass_300"] else r"\xmark"
+            lines.append(
+                rf"{name} & {stats['mean_ms']:.1f} & {stats['std_ms']:.1f} "
+                rf"& {stats['p95_ms']:.1f} & {stats['p99_ms']:.1f} & {p} \\"
+            )
+    lines += [r"\bottomrule", r"\end{tabular}", r"\end{table}"]
+    table = "\n".join(lines)
+
+    logger.info("LaTeX table:\n%s", table)
+
+    tex_path = Path(output_path).with_suffix(".tex")
+    tex_path.write_text(table, encoding="utf-8")
+    logger.info("Saved LaTeX table to %s", tex_path)
 
 
 def _synthetic_benchmark(

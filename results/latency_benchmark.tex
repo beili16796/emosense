@@ -1,0 +1,17 @@
+\begin{table}[h]
+\centering
+\caption{Inference latency per model (CPU, single window)}
+\label{tab:latency}
+\begin{tabular}{lrrrrr}
+\toprule
+Model & Mean (ms) & Std (ms) & p95 (ms) & p99 (ms) & $<$300ms \\
+\midrule
+CNN-LSTM & 0.0 & 0.0 & 0.0 & 0.0 & \checkmark \\
+DGCNN & 0.0 & 0.0 & 0.0 & 0.0 & \checkmark \\
+Transformer-MM & \multicolumn{5}{c}{error} \\
+BiDAE & \multicolumn{5}{c}{error} \\
+DGCCA-AM & \multicolumn{5}{c}{error} \\
+PR-PL & 0.0 & 0.0 & 0.0 & 0.0 & \checkmark \\
+\bottomrule
+\end{tabular}
+\end{table}

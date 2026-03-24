@@ -16,7 +16,7 @@ The project depends on `emokit`, a sibling ML library not included in this repo.
 
 The codebase uses `gr.Timer(every=0.5)` but no released Gradio version uses the `every` keyword — the parameter is `value` in Gradio 4.37+. After installing Gradio, a patch is applied to the installed `gradio/components/timer.py` to accept `every` as an alias for `value`. Additionally, `gradio_client/utils.py` requires a patch to handle Pydantic v2 JSON schemas (bool-typed `additionalProperties`). The update script handles both patches automatically.
 
-Use `gradio==4.42.0` and `huggingface_hub<0.25` for compatibility.
+Use `gradio==4.42.0` and `huggingface_hub<0.25` for compatibility. Additionally, `fastapi==0.111.0` and `pydantic<2.10` are required — newer versions of FastAPI/Starlette/Pydantic break Gradio's internal route serialization. The system Jinja2 (3.1.2) is too old; ensure `jinja2>=3.1.4` is installed via pip.
 
 ### Config symlink
 
@@ -44,8 +44,7 @@ python3 scripts/generate_demo_checkpoints.py
 python3 -m pytest tests/ -v
 ```
 
-55 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
-47 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
+94 pass, 12 skip, 2 pre-existing failures (`test_get_active_model_name` expects "none" but model auto-loads; `test_latency_sub_300ms_p99` missing `import torch` in benchmark script). The `tests/test_server.py` file has a syntax error (empty method body at line 137) and is excluded from collection; run with `--ignore=tests/test_server.py` to avoid the collection error.
 
 ### Linting
 

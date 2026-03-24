@@ -445,6 +445,74 @@ class TestFileParser:
         assert labels.shape == (4,)
         assert set(labels.tolist()).issubset({0, 1})
 
+    @staticmethod
+    def _make_deap_mat(directory: Path) -> Path:
+        """Create a minimal DEAP .mat file."""
+        import scipy.io
+
+        rng = np.random.default_rng(0)
+        data = rng.standard_normal((4, 40, 8064)).astype(np.float32)
+        labels = np.zeros((4, 4), dtype=np.float32)
+        labels[:, 0] = [3.0, 6.0, 4.0, 7.0]
+        labels[:, 1] = [5.0, 2.0, 8.0, 1.0]
+        path = directory / "1.mat"
+        scipy.io.savemat(str(path), {"data": data, "labels": labels})
+        return path
+
+    def test_parse_deap_mat_returns_expected_keys(self, tmp_path: Path) -> None:
+        mat = self._make_deap_mat(tmp_path)
+        result = FileParser.parse(mat)
+        assert "DEAP" in result["format"]
+        assert result["fs"] == 128
+        assert "eeg" in result
+        assert "labels" in result
+        assert "ch_names" in result
+
+    def test_parse_deap_mat_eeg_shape(self, tmp_path: Path) -> None:
+        mat = self._make_deap_mat(tmp_path)
+        result = FileParser.parse(mat)
+        eeg = result["eeg"]
+        assert eeg.ndim == 3
+        assert eeg.shape[0] == 4
+        assert eeg.shape[1] == 32
+        expected_samples = 8064 - 3 * 128
+        assert eeg.shape[2] == expected_samples
+
+    def test_parse_deap_mat_peripheral_signals(self, tmp_path: Path) -> None:
+        mat = self._make_deap_mat(tmp_path)
+        result = FileParser.parse(mat)
+        assert result["gsr"].shape == (4, 1, 8064 - 3 * 128)
+        assert result["ecg"].shape == (4, 1, 8064 - 3 * 128)
+
+    @staticmethod
+    def _make_seedv_npz(directory: Path) -> Path:
+        """Create a minimal SEED-V .npz file."""
+        rng = np.random.default_rng(0)
+        data_dict = {}
+        label_dict = {}
+        for i in range(3):
+            data_dict[i] = rng.standard_normal((10, 310)).astype(np.float32)
+            label_dict[i] = int(rng.integers(0, 5))
+        path = directory / "1_123.npz"
+        np.savez(str(path), data=data_dict, label=label_dict)
+        return path
+
+    def test_parse_seedv_npz_returns_expected_keys(self, tmp_path: Path) -> None:
+        npz = self._make_seedv_npz(tmp_path)
+        result = FileParser.parse(npz)
+        assert "SEED-V" in result["format"]
+        assert result["pre_extracted"] is True
+        assert "eeg_de" in result
+        assert len(result["ch_names"]) == 62
+
+    def test_parse_seedv_npz_reshapes_to_62x5(self, tmp_path: Path) -> None:
+        npz = self._make_seedv_npz(tmp_path)
+        result = FileParser.parse(npz)
+        first_trial = result["eeg_de"][0]
+        assert first_trial.ndim == 3
+        assert first_trial.shape[1] == 62
+        assert first_trial.shape[2] == 5
+
     def test_unsupported_extension_raises(self, tmp_path: Path) -> None:
         bad = tmp_path / "data.xyz"
         bad.write_bytes(b"garbage")
@@ -454,6 +522,7 @@ class TestFileParser:
     def test_supported_formats_list(self) -> None:
         assert ".dat" in FileParser.SUPPORTED_FORMATS
         assert ".mat" in FileParser.SUPPORTED_FORMATS
+        assert ".npz" in FileParser.SUPPORTED_FORMATS
         assert ".csv" in FileParser.SUPPORTED_FORMATS
         assert ".bdf" in FileParser.SUPPORTED_FORMATS
 

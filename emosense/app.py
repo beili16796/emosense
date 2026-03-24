@@ -427,7 +427,7 @@ def create_demo() -> gr.Blocks:
                 gr.Markdown("### File Upload")
                 file_input = gr.File(
                     label="Upload Signal File",
-                    file_types=[".dat", ".mat", ".csv", ".bdf"],
+                    file_types=[".dat", ".mat", ".npz", ".csv", ".bdf"],
                     type="filepath",
                 )
                 format_display = gr.Textbox(

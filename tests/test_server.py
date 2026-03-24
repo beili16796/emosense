@@ -126,6 +126,15 @@ class TestSetActiveModel:
         server_mod.engine.model_manager.set_active_model.side_effect = None
 
 
+# ======================================================================
+# POST /admin/reset
+# ======================================================================
+
+
+class TestAdminReset:
+    """Tests for ``POST /admin/reset``."""
+
+    def test_reset_returns_status(self, client: TestClient) -> None:
 class TestCancelTask:
     def test_cancel_unknown_task_returns_404(self, client: TestClient) -> None:
         resp = client.post("/cancel/missing")
@@ -146,6 +155,27 @@ class TestAdminReset:
         assert data["status"] == "reset"
         assert "timestamp" in data
 
+
+# ======================================================================
+# GET /health/detailed
+# ======================================================================
+
+
+class TestHealthDetailed:
+    """Tests for ``GET /health/detailed``."""
+
+    def test_returns_detailed_info(self, client: TestClient) -> None:
+        import emosense.backend.server as server_mod
+
+        server_mod.engine.model_manager._model_configs = {
+            "CNN-LSTM": {"checkpoint": "nonexistent.pt"},
+        }
+        resp = client.get("/health/detailed")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["status"] == "ok"
+        assert "active_model" in data
+        assert "models_with_real_weights" in data
         assert len(server_mod.SESSION_STORE) == 0
         assert len(server_mod.RESULTS_STORE) == 0
         assert len(server_mod.COMPLETED_TASKS) == 0

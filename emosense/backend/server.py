@@ -302,6 +302,47 @@ async def health() -> dict:
 
 @app.get("/health/detailed")
 async def health_detailed() -> dict:
+    """Detailed health check with model weight status."""
+    if engine is None:
+        return {"status": "not_initialized"}
+
+    model_names = engine.model_manager.get_model_names()
+    active = engine.model_manager.get_active_model_name()
+    n_sessions = len(SESSION_STORE)
+    n_results = sum(len(v) for v in RESULTS_STORE.values())
+
+    real_weights_count = 0
+    model_details: list[dict] = []
+    for name in model_names:
+        has_real = False
+        try:
+            cfg = engine.model_manager._model_configs.get(name, {})
+            ckpt_path = Path(cfg.get("checkpoint", ""))
+            has_real = ckpt_path.exists() and ckpt_path.stat().st_size > 1024
+        except Exception:
+            pass
+        if has_real:
+            real_weights_count += 1
+        model_details.append({"name": name, "has_real_weights": has_real})
+
+    result: dict = {
+        "status": "ok",
+        "active_model": active,
+        "available_models": model_details,
+        "models_with_real_weights": real_weights_count,
+        "active_sessions": n_sessions,
+        "total_results": n_results,
+    }
+
+    if real_weights_count == 0 and model_names:
+        result["warning"] = f"{len(model_names)} models using random weights — predictions will be meaningless"
+
+    return result
+
+
+@app.post("/admin/reset")
+async def admin_reset() -> dict:
+    """Reset all session state and results."""
     """Extended health check for UI banners and diagnostics."""
     if engine is None:
         return {
@@ -341,6 +382,8 @@ async def admin_reset() -> dict:
 
     SESSION_STORE.clear()
     RESULTS_STORE.clear()
+    connected_clients.clear()
+
     RESULT_BUFFER.clear()
     COMPLETED_TASKS.clear()
     CANCELLED_TASKS.clear()

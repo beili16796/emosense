@@ -417,6 +417,17 @@ def create_demo() -> gr.Blocks:
     ) as demo:
         gr.Markdown("# EmoSense \u2014 Physiological Emotion Analysis")
 
+        with gr.Accordion("Instructions", open=False):
+            gr.Markdown(
+                "**Welcome to EmoSense!**\n\n"
+                "1. Upload a physiological signal file (.mat, .dat, .npz, or .csv)\n"
+                "2. Select a model from the dropdown\n"
+                "3. Click **Start Analysis**\n"
+                "4. Explore the 4 visualisation panels while analysis runs\n"
+                "5. Try switching models to compare predictions\n\n"
+                "*Session duration: ~10 minutes*"
+            )
+
         uploaded_task_id = gr.State(value="")
         results_cursor = gr.State(value=0)
         last_de_features = gr.State(value=None)

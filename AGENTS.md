@@ -44,7 +44,7 @@ python3 scripts/generate_demo_checkpoints.py
 python3 -m pytest tests/ -v
 ```
 
-47 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
+55 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
 
 ### Linting
 
@@ -52,4 +52,27 @@ python3 -m pytest tests/ -v
 python3 -m ruff check emosense/ tests/
 ```
 
-11 pre-existing F401 (unused import) warnings in the original code.
+Pre-existing F401 (unused import) warnings in the original code.
+
+### File format support
+
+The parser supports: `.dat` (DEAP pickle), `.mat` (auto-detects DEAP vs SEED), `.npz` (SEED-V DE features), `.csv`, `.bdf`. Synthetic test files are in `demo_data/` and can be regenerated via `scripts/create_test_mat.py`.
+
+### API endpoints
+
+- `GET /health` — basic health check
+- `GET /health/detailed` — model weight status, session count, warnings
+- `POST /admin/reset` — clear all sessions and results
+- `GET /models` — list available models
+- `POST /models/active` — switch active model
+- `POST /upload` — upload signal file
+- `POST /process/{task_id}` — start analysis
+- `GET /results/latest` — poll results
+
+### Benchmark
+
+```bash
+PYTHONPATH=/workspace python3 scripts/benchmark_latency.py --n-warmup 20 --n-measure 100
+```
+
+LaTeX table saved to `results/latency_benchmark.tex`.

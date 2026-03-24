@@ -123,7 +123,6 @@ class FileParser:
         import scipy.io
 
         mat = scipy.io.loadmat(str(filepath))
-        non_private = [k for k in mat if not k.startswith("_")]
 
         if "data" in mat and "labels" in mat:
             return cls._parse_deap_mat(filepath, mat)

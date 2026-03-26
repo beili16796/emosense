@@ -340,26 +340,57 @@ class ProcessingEngine:
         """Adapt one DE window to each EmoKit model's expected input format."""
         x_de = np.asarray(de_feat, dtype=np.float32)[np.newaxis, ...]
         flat = x_de.reshape(x_de.shape[0], -1)
-        flat = self._pad_flat(flat, model)
+
+        n_feat1 = self._model_param(model, "n_feat1", 0) or self._model_param(model, "n_feat_eeg", 0) or self._model_param(model, "n_feat", 0)
 
         if model_name == "BiDAE":
             mod2_dim = self._model_param(model, "n_feat2", 3)
-            return {"mod1": flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
+            eeg_dim = n_feat1 or 160
+            eeg_flat = self._pad_to(flat, eeg_dim)
+            return {"mod1": eeg_flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
         if model_name == "DGCCA-AM":
             gsr_dim = self._model_param(model, "n_feat_gsr", 3)
             ecg_dim = self._model_param(model, "n_feat_ecg", 5)
+            eeg_dim = self._model_param(model, "n_feat_eeg", 160)
+            eeg_flat = self._pad_to(flat, eeg_dim)
             return {
-                "eeg": flat,
+                "eeg": eeg_flat,
                 "gsr": np.zeros((1, gsr_dim), dtype=np.float32),
                 "ecg": np.zeros((1, ecg_dim), dtype=np.float32),
             }
         if model_name == "Transformer-MM":
             periph_dim = self._model_param(model, "n_peripheral_feat", 8)
-            x_pad = self._pad_flat(x_de.reshape(x_de.shape[0], -1), model)
+            try:
+                in_feat = int(getattr(model, "_in_features", 0) or 0)
+            except (TypeError, ValueError):
+                in_feat = 0
+            if in_feat > 0:
+                eeg_dim = in_feat - periph_dim
+                n_bands = x_de.shape[-1]
+                n_ch_target = eeg_dim // n_bands if n_bands > 0 else x_de.shape[1]
+            else:
+                n_ch_target = x_de.shape[1]
+            if x_de.shape[1] < n_ch_target:
+                pad_ch = n_ch_target - x_de.shape[1]
+                x_de = np.pad(x_de, ((0, 0), (0, pad_ch), (0, 0)), constant_values=0)
             return {
-                "eeg": x_pad.reshape(1, -1, x_de.shape[-1]) if x_pad.shape[-1] != flat.shape[-1] else x_de,
+                "eeg": x_de,
                 "peripheral": np.zeros((1, periph_dim), dtype=np.float32),
             }
         if model_name == "DGCNN":
+            n_ch_cfg = self._model_param(model, "n_channels", x_de.shape[1])
+            if x_de.shape[1] < n_ch_cfg:
+                pad_ch = n_ch_cfg - x_de.shape[1]
+                x_de = np.pad(x_de, ((0, 0), (0, pad_ch), (0, 0)), constant_values=0)
             return x_de
+
+        flat = self._pad_flat(flat, model)
         return flat
+
+    @staticmethod
+    def _pad_to(arr: np.ndarray, target_dim: int) -> np.ndarray:
+        """Zero-pad last dimension to target_dim if smaller."""
+        if arr.shape[-1] < target_dim:
+            pad_w = target_dim - arr.shape[-1]
+            arr = np.pad(arr, ((0, 0), (0, pad_w)), constant_values=0)
+        return arr

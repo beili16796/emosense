@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from emosense.visualization import ContributionPlot, TopoMapPlot, VATrajectoryPlot
+from emosense.visualization import ContributionPlot, TopoMapPlot, VATrajectoryPlot, WaveformSyncPlot
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ MODEL_NAMES_DEFAULT = ["CNN-LSTM", "DGCNN", "Transformer-MM", "BiDAE", "DGCCA-AM
 va_plot = VATrajectoryPlot(history_len=20)
 topo_plot: TopoMapPlot | None = None
 contrib_plot = ContributionPlot()
+waveform_plot = WaveformSyncPlot(display_seconds=10.0, fs=128)
 
 
 def _get_topo_plot(ch_names: list[str] | None = None, fs: int = 128) -> TopoMapPlot:
@@ -175,6 +176,7 @@ def on_file_upload(
 def on_analyze(
     task_id: str,
     model_name: str,
+    stream_speed: float = 0.0,
 ) -> tuple[str, int]:
     """Start processing the uploaded file."""
     if not task_id:
@@ -190,18 +192,19 @@ def on_analyze(
             timeout=5.0,
         )
         resp.raise_for_status()
-        logger.info(f"Switched backend to model: {model_name}")
     except Exception as e:
-        logger.error(f"Failed to switch backend to {model_name}: {e}")
+        logger.error("Failed to switch backend to %s: %s", model_name, e)
         return f"Model switch failed: {e}", 0
 
     try:
         resp = httpx.post(
             f"{BACKEND_URL}/process/{task_id}",
+            params={"stream_interval": str(stream_speed)},
             timeout=5.0,
         )
         resp.raise_for_status()
-        return f"Processing\u2026 (task {task_id})", 0
+        mode = "Live streaming" if stream_speed > 0 else "Processing"
+        return f"{mode}\u2026 (task {task_id})", 0
     except Exception as exc:
         return f"Failed to start: {exc}", 0
 
@@ -260,7 +263,7 @@ def on_demo_load() -> tuple[str, Any, str, str]:
     )
 
 
-def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, str, str, int]:
+def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, Any, float, list, str, str, int]:
     """Reset all state and plots."""
     if task_id:
         try:
@@ -269,6 +272,7 @@ def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, s
             pass
     va_plot.reset()
     contrib_plot.reset()
+    waveform_plot.reset()
 
     return (
         "Ready",
@@ -277,11 +281,12 @@ def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, s
         gr.update(value=None),
         gr.update(value=None),
         gr.update(value=None),
+        gr.update(value=None),
         0.0,
         [],
         "\u2014",
-        "",       # clear task_id
-        0,        # reset cursor
+        "",
+        0,
     )
 
 
@@ -303,13 +308,14 @@ def poll_updates(
     results_cursor: int,
     current_band: str,
     est_segments: int = 0,
-) -> tuple[Any, Any, Any, Any, float, list, str, str, int, Any]:
-    """Timer callback — poll /results/latest and refresh UI."""
+) -> tuple[Any, Any, Any, Any, Any, float, list, str, str, int, Any]:
+    """Timer callback — poll /results/latest and refresh UI (inc. waveform)."""
+    no_update = (
+        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+    )
     if not task_id:
-        return (
-            gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-        )
+        return no_update
 
     try:
         resp = httpx.get(
@@ -320,10 +326,7 @@ def poll_updates(
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        return (
-            gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-        )
+        return no_update
 
     new_results = data.get("results", [])
     next_idx = data.get("next_idx", results_cursor)
@@ -331,7 +334,7 @@ def poll_updates(
     inference_results = [r for r in new_results if r.get("type") == "inference"]
     if not inference_results:
         return (
-            gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
             gr.update(), gr.update(), gr.update(), gr.update(), next_idx, gr.update(),
         )
 
@@ -375,6 +378,15 @@ def poll_updates(
     weights_arr = np.asarray(attention_weights) if attention_weights else None
     contrib_fig = contrib_plot.update(weights_arr, model_name=model_name)
 
+    time_sec = latest.get("time_start_sec", 0.0)
+    if de_features_raw is not None:
+        de_arr_np = np.asarray(de_features_raw, dtype=np.float64)
+        n_ch = de_arr_np.shape[0]
+        alpha_idx = 2
+        eeg_signal = de_arr_np[:, alpha_idx] if de_arr_np.shape[1] > alpha_idx else de_arr_np[:, 0]
+        waveform_plot.push(eeg_snippet=eeg_signal, time_start=time_sec)
+    wave_fig = waveform_plot.render(current_time=time_sec)
+
     all_results_resp = httpx.get(
         f"{BACKEND_URL}/results/latest",
         params={"task_id": task_id, "since_idx": 0},
@@ -414,6 +426,7 @@ def poll_updates(
         topo_fig,
         contrib_fig,
         timeline_fig,
+        wave_fig,
         progress,
         table_data,
         pred_text,
@@ -501,6 +514,12 @@ def create_demo() -> gr.Blocks:
                     "_Demo presets auto-configure window, overlap, and model selection._"
                 )
 
+                stream_speed = gr.Slider(
+                    label="Stream Speed (sec/window)",
+                    minimum=0.0, maximum=2.0, value=0.5, step=0.1,
+                    info="0 = instant, 0.5 = ~2 windows/sec (BCI simulation)",
+                )
+
                 with gr.Row():
                     analyze_btn = gr.Button("Start Analysis", variant="primary", interactive=False)
                     reset_btn = gr.Button("Reset", variant="stop")
@@ -535,6 +554,8 @@ def create_demo() -> gr.Blocks:
                     contrib_plot_component = gr.Plot(label="Modality Contribution")
                     timeline_plot_component = gr.Plot(label="Prediction Timeline")
 
+                waveform_component = gr.Plot(label="Multimodal Signal Monitor")
+
                 progress_bar = gr.Slider(
                     label="Progress",
                     minimum=0.0, maximum=1.0, value=0.0,
@@ -557,6 +578,7 @@ def create_demo() -> gr.Blocks:
                 topo_plot_component,
                 contrib_plot_component,
                 timeline_plot_component,
+                waveform_component,
                 progress_bar,
                 results_table,
                 pred_label,
@@ -575,7 +597,7 @@ def create_demo() -> gr.Blocks:
 
         analyze_btn.click(
             fn=on_analyze,
-            inputs=[uploaded_task_id, model_dd],
+            inputs=[uploaded_task_id, model_dd, stream_speed],
             outputs=[status_box, results_cursor],
         )
 
@@ -601,6 +623,7 @@ def create_demo() -> gr.Blocks:
                 topo_plot_component,
                 contrib_plot_component,
                 timeline_plot_component,
+                waveform_component,
                 progress_bar,
                 results_table,
                 pred_label,

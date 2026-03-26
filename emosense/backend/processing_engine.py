@@ -136,12 +136,19 @@ class ProcessingEngine:
 
         for idx in range(len(all_windows["de"])):
             de_feat = all_windows["de"][idx]
+            has_nan = bool(np.isnan(de_feat).any())
+            if has_nan:
+                de_feat_safe = np.nan_to_num(de_feat, nan=0.0)
+            else:
+                de_feat_safe = de_feat
             t0 = time.perf_counter()
-            result = self._run_inference(de_feat, parsed_data, all_windows, idx, file_format)
+            result = self._run_inference(de_feat_safe, parsed_data, all_windows, idx, file_format)
             result.latency_ms = (time.perf_counter() - t0) * 1000
             result.trial_idx = int(all_windows["trial_idx"][idx])
             result.window_idx = int(all_windows["win_idx"][idx])
             result.time_start_sec = float(all_windows["time_sec"][idx])
+            if has_nan:
+                result.de_features = de_feat
             yield result
 
     def _extract_all_windows(

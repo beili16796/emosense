@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -178,12 +179,23 @@ async def get_file_hash(file: UploadFile = File(...)) -> dict:
 
 
 @app.post("/process/{task_id}")
-async def start_processing(task_id: str, background_tasks: BackgroundTasks) -> dict:
-    """Start background processing of an uploaded file."""
+async def start_processing(
+    task_id: str,
+    background_tasks: BackgroundTasks,
+    stream_interval: float = 0.0,
+) -> dict:
+    """Start background processing of an uploaded file.
+
+    Args:
+        stream_interval: Seconds to wait between emitting each window result.
+            Set to 0.5 for real-time BCI simulation (~2 windows/sec).
+            Default 0.0 = process as fast as possible.
+    """
     if task_id not in SESSION_STORE:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
     COMPLETED_TASKS[task_id] = False
     CANCELLED_TASKS[task_id] = False
+    SESSION_STORE[task_id]["stream_interval"] = max(0.0, min(stream_interval, 5.0))
     background_tasks.add_task(_run_processing, task_id)
     return {"status": "processing_started", "task_id": task_id}
 
@@ -208,6 +220,7 @@ async def _run_processing(task_id: str) -> None:
 
     n_errors = 0
     max_consecutive_errors = 5
+    stream_interval = ctx.get("stream_interval", 0.0)
 
     try:
         assert engine is not None
@@ -236,6 +249,8 @@ async def _run_processing(task_id: str) -> None:
                     raise RuntimeError(
                         f"Too many consecutive errors ({n_errors}), aborting task"
                     ) from win_err
+            if stream_interval > 0:
+                await asyncio.sleep(stream_interval)
 
         COMPLETED_TASKS[task_id] = True
         await _broadcast(json.dumps({"type": "processing_complete", "task_id": task_id}))

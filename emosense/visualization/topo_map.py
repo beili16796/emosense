@@ -112,6 +112,10 @@ class TopoMapPlot:
         if self._prev_fig is not None:
             plt.close(self._prev_fig)
 
+        nan_ratio = np.isnan(values).mean()
+        if nan_ratio > 0.5:
+            return self._sensor_disconnected(band, nan_ratio)
+
         if not _MNE_AVAILABLE or self._info is None:
             return self._fallback_heatmap(de_features, band)
 
@@ -186,6 +190,30 @@ class TopoMapPlot:
             0.5, 0.5, "Awaiting data\u2026",
             ha="center", va="center", fontsize=13, color="#aaaaaa",
             transform=ax.transAxes, style="italic",
+        )
+        ax.set_axis_off()
+        fig.tight_layout()
+        self._prev_fig = fig
+        return fig
+
+    def _sensor_disconnected(self, band: str, nan_ratio: float) -> Figure:
+        """Warning figure when too many channels report NaN."""
+        fig, ax = plt.subplots(1, 1, figsize=(4.2, 4.2), dpi=120)
+        fig.patch.set_facecolor("#fff3cd")
+        ax.set_facecolor("#fff3cd")
+        ax.text(
+            0.5, 0.55,
+            "\u26a0  Sensor Disconnected",
+            ha="center", va="center", fontsize=14,
+            fontweight="bold", color="#856404",
+            transform=ax.transAxes,
+        )
+        ax.text(
+            0.5, 0.38,
+            f"{nan_ratio * 100:.0f}% of channels report NaN\n"
+            f"Band: {band} | Check electrode contact",
+            ha="center", va="center", fontsize=9,
+            color="#856404", transform=ax.transAxes,
         )
         ax.set_axis_off()
         fig.tight_layout()

@@ -134,13 +134,13 @@ def on_file_upload(
     window_sec: float,
     overlap: float,
     model_name: str,
-) -> tuple[str, str, Any]:
-    """Upload file to backend, return format info, task_id, and enable button."""
+) -> tuple[str, str, Any, int]:
+    """Upload file to backend, return format info, task_id, enable button, and est. segments."""
     if file is None:
-        return "No file selected", "", gr.update(interactive=False)
+        return "No file selected", "", gr.update(interactive=False), 0
 
     if not _backend_online():
-        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False)
+        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False), 0
 
     try:
         with open(file, "rb") as f:
@@ -165,11 +165,11 @@ def on_file_upload(
             f"Channels: {info['n_channels']} | "
             f"Est. segments: {info['estimated_segments']}"
         )
-        return fmt_text, info["task_id"], gr.update(interactive=True)
+        return fmt_text, info["task_id"], gr.update(interactive=True), info["estimated_segments"]
     except httpx.ConnectError:
-        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False)
+        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False), 0
     except Exception as exc:
-        return f"Error: {exc}", "", gr.update(interactive=False)
+        return f"Error: {exc}", "", gr.update(interactive=False), 0
 
 
 def on_analyze(
@@ -292,6 +292,7 @@ def poll_updates(
     task_id: str,
     results_cursor: int,
     current_band: str,
+    est_segments: int = 0,
 ) -> tuple[Any, Any, Any, Any, float, list, str, str, int, Any]:
     """Timer callback — poll /results/latest and refresh UI."""
     if not task_id:
@@ -358,8 +359,10 @@ def poll_updates(
     all_inference = [r for r in all_results_resp.get("results", []) if r.get("type") == "inference"]
     timeline_fig = _plot_timeline(all_inference)
 
-    total_estimated = max(len(all_inference), 1)
+    total_estimated = max(est_segments, len(all_inference), 1)
     progress = min(len(all_inference) / total_estimated, 1.0)
+    if data.get("is_complete", False):
+        progress = 1.0
 
     table_data = [
         [
@@ -431,6 +434,7 @@ def create_demo() -> gr.Blocks:
         uploaded_task_id = gr.State(value="")
         results_cursor = gr.State(value=0)
         last_de_features = gr.State(value=None)
+        estimated_segments = gr.State(value=0)
 
         with gr.Row():
             # LEFT PANEL
@@ -523,7 +527,7 @@ def create_demo() -> gr.Blocks:
         timer = gr.Timer(every=0.5)
         timer.tick(
             fn=poll_updates,
-            inputs=[uploaded_task_id, results_cursor, band_radio],
+            inputs=[uploaded_task_id, results_cursor, band_radio, estimated_segments],
             outputs=[
                 va_plot_component,
                 topo_plot_component,
@@ -542,7 +546,7 @@ def create_demo() -> gr.Blocks:
         file_input.upload(
             fn=on_file_upload,
             inputs=[file_input, window_slider, overlap_slider, model_dd],
-            outputs=[format_display, uploaded_task_id, analyze_btn],
+            outputs=[format_display, uploaded_task_id, analyze_btn, estimated_segments],
         )
 
         analyze_btn.click(

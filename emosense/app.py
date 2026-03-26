@@ -342,8 +342,22 @@ def poll_updates(
     if de_features_raw is not None:
         try:
             de_arr = np.asarray(de_features_raw, dtype=np.float64)
-            if de_arr.shape[0] != tp.n_channels:
-                tp = _get_topo_plot(ch_names=None, fs=128)
+            n_ch = de_arr.shape[0]
+            if n_ch != tp.n_channels:
+                from emosense.backend.file_parser import (
+                    DEAP_EEG_CHANNELS,
+                    DREAMER_14_CHANNELS,
+                    SEED_62_CHANNELS,
+                )
+                if n_ch == 14:
+                    tp = _get_topo_plot(ch_names=list(DREAMER_14_CHANNELS), fs=128)
+                elif n_ch == 62:
+                    tp = _get_topo_plot(ch_names=list(SEED_62_CHANNELS), fs=200)
+                elif n_ch == 32:
+                    tp = _get_topo_plot(ch_names=list(DEAP_EEG_CHANNELS), fs=128)
+                else:
+                    ch_names = [f"Ch{i}" for i in range(n_ch)]
+                    tp = _get_topo_plot(ch_names=ch_names, fs=128)
             topo_fig = tp.update(de_arr, band=current_band)
         except Exception as exc:
             logger.warning("Topo-map update failed: %s", exc)

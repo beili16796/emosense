@@ -324,10 +324,23 @@ class ProcessingEngine:
         params = getattr(model, "_params", {})
         return int(params.get(key, default))
 
+    @staticmethod
+    def _pad_flat(flat: np.ndarray, model: Any) -> np.ndarray:
+        """Zero-pad flattened features to match model's expected input size."""
+        try:
+            expected = int(getattr(model, "_in_features", 0) or 0)
+        except (TypeError, ValueError):
+            return flat
+        if expected > 0 and flat.shape[-1] < expected:
+            pad_width = expected - flat.shape[-1]
+            flat = np.pad(flat, ((0, 0), (0, pad_width)), constant_values=0)
+        return flat
+
     def _make_model_input(self, model_name: str, de_feat: np.ndarray, model: Any) -> Any:
         """Adapt one DE window to each EmoKit model's expected input format."""
         x_de = np.asarray(de_feat, dtype=np.float32)[np.newaxis, ...]
         flat = x_de.reshape(x_de.shape[0], -1)
+        flat = self._pad_flat(flat, model)
 
         if model_name == "BiDAE":
             mod2_dim = self._model_param(model, "n_feat2", 3)
@@ -342,8 +355,9 @@ class ProcessingEngine:
             }
         if model_name == "Transformer-MM":
             periph_dim = self._model_param(model, "n_peripheral_feat", 8)
+            x_pad = self._pad_flat(x_de.reshape(x_de.shape[0], -1), model)
             return {
-                "eeg": x_de,
+                "eeg": x_pad.reshape(1, -1, x_de.shape[-1]) if x_pad.shape[-1] != flat.shape[-1] else x_de,
                 "peripheral": np.zeros((1, periph_dim), dtype=np.float32),
             }
         if model_name == "DGCNN":

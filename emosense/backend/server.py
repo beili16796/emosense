@@ -22,7 +22,9 @@ from emosense.backend.processing_engine import InferenceResult, ProcessingEngine
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="EmoSense API", version="0.2.0")
+app = FastAPI(title="EmoSense API", version="0.3.0")
+
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024  # 200 MB hard limit
 
 SESSION_STORE: dict[str, dict[str, Any]] = {}
 RESULTS_STORE: dict[str, list[dict]] = {}
@@ -82,6 +84,14 @@ async def upload_file(
     suffix = Path(file.filename or "unknown.dat").suffix
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         content = await file.read()
+        if len(content) > MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File too large ({len(content) / 1024 / 1024:.0f} MB). "
+                f"Maximum allowed: {MAX_UPLOAD_BYTES / 1024 / 1024:.0f} MB.",
+            )
+        if len(content) == 0:
+            raise HTTPException(status_code=422, detail="Uploaded file is empty.")
         tmp.write(content)
         tmp_path = Path(tmp.name)
 
@@ -90,6 +100,18 @@ async def upload_file(
     except Exception as e:
         tmp_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail=str(e))
+
+    fs = parsed.get("fs", 0)
+    if fs <= 0 or fs > 10000:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid sampling rate: {fs} Hz. Expected 1-10000 Hz.",
+        )
+    n_ch = len(parsed.get("ch_names", []))
+    if n_ch == 0 and not parsed.get("pre_extracted"):
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=422, detail="No EEG channels detected in file.")
 
     file_hash = hashlib.sha256(content).hexdigest()[:16]
 
@@ -177,8 +199,15 @@ async def cancel_task(task_id: str) -> dict:
 
 async def _run_processing(task_id: str) -> None:
     """Background task: process file and broadcast results."""
-    ctx = SESSION_STORE[task_id]
+    ctx = SESSION_STORE.get(task_id)
+    if ctx is None:
+        logger.warning("Task %s not found in SESSION_STORE", task_id)
+        COMPLETED_TASKS[task_id] = True
+        return
     parsed = ctx["parsed"]
+
+    n_errors = 0
+    max_consecutive_errors = 5
 
     try:
         assert engine is not None
@@ -194,19 +223,32 @@ async def _run_processing(task_id: str) -> None:
                 COMPLETED_TASKS[task_id] = True
                 await _broadcast(json.dumps({"type": "cancelled", "task_id": task_id}))
                 return
-            msg = _result_to_dict(result, task_id)
-            RESULTS_STORE.setdefault(task_id, []).append(msg)
-            RESULT_BUFFER[task_id].append(msg)
-            await _broadcast(json.dumps(msg))
+            try:
+                msg = _result_to_dict(result, task_id)
+                RESULTS_STORE.setdefault(task_id, []).append(msg)
+                RESULT_BUFFER[task_id].append(msg)
+                await _broadcast(json.dumps(msg))
+                n_errors = 0
+            except Exception as win_err:
+                n_errors += 1
+                logger.warning("Window serialization error (task %s): %s", task_id, win_err)
+                if n_errors >= max_consecutive_errors:
+                    raise RuntimeError(
+                        f"Too many consecutive errors ({n_errors}), aborting task"
+                    ) from win_err
 
         COMPLETED_TASKS[task_id] = True
         await _broadcast(json.dumps({"type": "processing_complete", "task_id": task_id}))
     except Exception as e:
         logger.exception("Processing failed for task %s", task_id)
         COMPLETED_TASKS[task_id] = True
-        await _broadcast(json.dumps({"type": "error", "task_id": task_id, "message": str(e)}))
+        err_msg = str(e)[:500]
+        await _broadcast(json.dumps({"type": "error", "task_id": task_id, "message": err_msg}))
     finally:
-        Path(ctx["tmp_path"]).unlink(missing_ok=True)
+        try:
+            Path(ctx["tmp_path"]).unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def _result_to_dict(r: InferenceResult, task_id: str) -> dict:
@@ -293,10 +335,12 @@ async def list_models() -> list[dict]:
 
 @app.post("/models/active")
 async def set_active_model(body: dict) -> dict:
-    """Switch the active model."""
+    """Switch the active model (safe during processing — uses cache)."""
     if engine is None:
         raise HTTPException(500, "Engine not initialized")
     name = body.get("name", "")
+    if not name:
+        raise HTTPException(status_code=422, detail="Model name required")
     try:
         engine.model_manager.set_active_model(name)
     except KeyError as e:

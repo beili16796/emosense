@@ -184,13 +184,16 @@ def on_analyze(
         return "Backend offline", 0
 
     try:
-        httpx.post(
+        resp = httpx.post(
             f"{BACKEND_URL}/models/active",
             json={"name": model_name},
             timeout=5.0,
         )
-    except Exception:
-        pass
+        resp.raise_for_status()
+        logger.info(f"Switched backend to model: {model_name}")
+    except Exception as e:
+        logger.error(f"Failed to switch backend to {model_name}: {e}")
+        return f"Model switch failed: {e}", 0
 
     try:
         resp = httpx.post(
@@ -206,18 +209,19 @@ def on_analyze(
 def on_model_switch(model_name: str) -> None:
     """Switch active model mid-session."""
     try:
-        httpx.post(
+        resp = httpx.post(
             f"{BACKEND_URL}/models/active",
             json={"name": model_name},
             timeout=5.0,
         )
-    except Exception:
-        pass
+        resp.raise_for_status()
+        logger.info(f"Model switch successful: {model_name}")
+    except Exception as e:
+        logger.error(f"Model switch failed: {model_name} - {e}")
 
 
-def on_model_change(model_name: str) -> tuple[str, str]:
-    """Return markdown metadata for the selected model."""
-    on_model_switch(model_name)
+def _get_model_info_md(model_name: str) -> tuple[str, str]:
+    """Return markdown metadata for the selected model (without switching backend)."""
     models = {m["name"]: m for m in _fetch_models()}
     info = models.get(model_name)
     if not info:
@@ -238,10 +242,16 @@ def on_model_change(model_name: str) -> tuple[str, str]:
     return info_md, status
 
 
+def on_model_change(model_name: str) -> tuple[str, str]:
+    """Return markdown metadata for the selected model."""
+    on_model_switch(model_name)
+    return _get_model_info_md(model_name)
+
+
 def on_demo_load() -> tuple[str, Any, str, str]:
     names = _fetch_model_names() or MODEL_NAMES_DEFAULT
     first = names[0] if names else "DGCNN"
-    info_md, status = on_model_change(first)
+    info_md, status = _get_model_info_md(first)
     return (
         "Backend online" if _backend_online() else "Backend offline - waiting",
         gr.update(choices=names, value=first),

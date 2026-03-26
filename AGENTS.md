@@ -56,7 +56,7 @@ python3 -m ruff check emosense/ tests/
 
 ### File format support
 
-The parser supports: `.dat` (DEAP pickle), `.mat` (auto-detects DEAP vs SEED), `.npz` (SEED-V DE features), `.csv`, `.bdf`. Synthetic test files are in `demo_data/` and can be regenerated via `scripts/create_test_mat.py`.
+The parser supports: `.dat` (DEAP pickle), `.mat` (auto-detects DEAP vs DREAMER vs SEED), `.npz` (SEED-V DE features), `.csv`, `.bdf`. DREAMER .mat files are detected by the top-level `DREAMER` variable (14-channel Emotiv EPOC layout). Models handle channel mismatch via zero-padding. Synthetic test files are in `demo_data/` and can be regenerated via `scripts/create_test_mat.py` (supports `--format deap/seedv/dreamer`).
 
 ### API endpoints
 

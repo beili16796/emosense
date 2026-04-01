@@ -263,7 +263,7 @@ def on_demo_load() -> tuple[str, Any, str, str]:
     )
 
 
-def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, Any, float, list, str, str, int]:
+def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, Any, float, list, str, str, str, int]:
     """Reset all state and plots."""
     if task_id:
         try:
@@ -286,6 +286,7 @@ def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, Any, float, li
         [],
         "\u2014",
         "",
+        "t = 0.0 s",
         0,
     )
 
@@ -308,11 +309,12 @@ def poll_updates(
     results_cursor: int,
     current_band: str,
     est_segments: int = 0,
-) -> tuple[Any, Any, Any, Any, Any, float, list, str, str, int, Any]:
-    """Timer callback — poll /results/latest and refresh UI (inc. waveform)."""
+) -> tuple[Any, Any, Any, Any, Any, float, list, str, str, str, int, Any]:
+    """Timer callback — poll /results/latest and refresh all panels + sync timestamp."""
     no_update = (
         gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+        gr.update(), gr.update(),
     )
     if not task_id:
         return no_update
@@ -335,7 +337,8 @@ def poll_updates(
     if not inference_results:
         return (
             gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), next_idx, gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            next_idx, gr.update(),
         )
 
     latest = inference_results[-1]
@@ -418,6 +421,7 @@ def poll_updates(
         if data.get("is_complete", False)
         else f"Processing: {len(all_inference)} windows"
     )
+    sync_text = f"t = {time_sec:.1f} s"
 
     last_de_state = de_features_raw
 
@@ -431,6 +435,7 @@ def poll_updates(
         table_data,
         pred_text,
         status_text,
+        sync_text,
         next_idx,
         last_de_state,
     )
@@ -461,10 +466,11 @@ def create_demo() -> gr.Blocks:
             gr.Markdown(
                 "**Welcome to EmoSense!**\n\n"
                 "1. Upload a physiological signal file (.mat, .dat, .npz, or .csv)\n"
-                "2. Select a model from the dropdown\n"
-                "3. Click **Start Analysis**\n"
-                "4. Explore the 4 visualisation panels while analysis runs\n"
-                "5. Try switching models to compare predictions\n\n"
+                "2. Optionally upload the stimulus video that was shown during recording\n"
+                "3. Select a model from the dropdown\n"
+                "4. Click **Start Analysis** — start the video playback at the same time\n"
+                "5. Watch all panels update in sync: V-A trajectory, topomap, attention radar, waveform\n"
+                "6. The \u23f1 timestamp display tracks the current analysis window\n\n"
                 "*Session duration: ~10 minutes*"
             )
 
@@ -476,7 +482,7 @@ def create_demo() -> gr.Blocks:
         with gr.Row():
             # LEFT PANEL
             with gr.Column(scale=1, min_width=260):
-                gr.Markdown("### File Upload")
+                gr.Markdown("### Signal & Stimulus")
                 file_input = gr.File(
                     label="Upload Signal File",
                     file_types=[".dat", ".mat", ".npz", ".csv", ".bdf"],
@@ -487,6 +493,10 @@ def create_demo() -> gr.Blocks:
                     value="",
                     interactive=False,
                     lines=2,
+                )
+                gr.Video(
+                    label="\U0001f3ac Stimulus Video (optional)",
+                    height=160,
                 )
 
                 gr.Markdown("### Parameters")
@@ -545,6 +555,12 @@ def create_demo() -> gr.Blocks:
                         interactive=False,
                         scale=1,
                     )
+                    sync_timestamp = gr.Textbox(
+                        label="\u23f1 Sync Time",
+                        value="t = 0.0 s",
+                        interactive=False,
+                        scale=1,
+                    )
 
                 with gr.Row():
                     va_plot_component = gr.Plot(label="V-A Trajectory")
@@ -583,6 +599,7 @@ def create_demo() -> gr.Blocks:
                 results_table,
                 pred_label,
                 status_box,
+                sync_timestamp,
                 results_cursor,
                 last_de_features,
             ],
@@ -628,6 +645,7 @@ def create_demo() -> gr.Blocks:
                 results_table,
                 pred_label,
                 uploaded_task_id,
+                sync_timestamp,
                 results_cursor,
             ],
         )

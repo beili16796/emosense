@@ -2,7 +2,7 @@
 # Copyright (c) 2024 EmoKit Contributors
 # See LICENSE for full text.
 
-"""Modality contribution horizontal bar chart with smoothed history."""
+"""Modality contribution: bar chart + radar plot with smoothed history."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ _MODALITY_COLORS: dict[str, str] = {
 
 
 def _ema_smooth(series: list[float], alpha: float = 0.3) -> list[float]:
-    """Exponential moving average for temporal smoothing."""
     if not series:
         return []
     out = [series[0]]
@@ -36,11 +35,7 @@ def _ema_smooth(series: list[float], alpha: float = 0.3) -> list[float]:
 
 
 class ContributionPlot:
-    """Horizontal bar chart of modality attention / contribution weights.
-
-    Features smoothed history lines to reduce visual jitter during
-    real-time streaming.
-    """
+    """Bar chart + radar of modality attention weights with EMA-smoothed history."""
 
     def __init__(
         self,
@@ -65,89 +60,88 @@ class ContributionPlot:
             if len(self._history) > self._history_len:
                 self._history = self._history[-self._history_len:]
 
-        fig, axes = plt.subplots(
-            1, 2, figsize=(6.5, 2.8), dpi=110,
-            gridspec_kw={"width_ratios": [2.2, 1]},
-        )
-        fig.patch.set_facecolor("white")
-
         if weights is None:
-            unimodal_text = (
-                f"{model_name} (EEG only)\n"
-                "\u2500" * 28 + "\n"
-                "Unimodal model \u2014 contribution\n"
-                "breakdown not available.\n\n"
-                "Switch to DGCCA-AM for\n"
-                "multimodal attention weights."
-            )
-            axes[0].text(
-                0.5, 0.5, unimodal_text,
-                ha="center", va="center", fontsize=9.5, color="#777777",
-                transform=axes[0].transAxes, family="monospace",
-                linespacing=1.4,
-            )
-            axes[0].set_axis_off()
-            axes[1].set_axis_off()
+            return self._unimodal_placeholder(model_name)
+
+        names = self._modality_names[:len(weights)]
+        colors = [_MODALITY_COLORS.get(n, "#999999") for n in names]
+
+        fig = plt.figure(figsize=(7, 3), dpi=110)
+        fig.patch.set_facecolor("white")
+        gs = fig.add_gridspec(1, 3, width_ratios=[2, 1.2, 1])
+
+        ax_bar = fig.add_subplot(gs[0])
+        ax_radar = fig.add_subplot(gs[1], polar=True)
+        ax_trend = fig.add_subplot(gs[2])
+
+        # ── bar chart ──
+        y_pos = list(range(len(names)))
+        ax_bar.barh(y_pos, weights, color=colors, edgecolor="white", linewidth=0.8, height=0.65)
+        ax_bar.set_yticks(y_pos)
+        ax_bar.set_yticklabels(names, fontsize=10, fontweight="bold")
+        ax_bar.set_xlim(0, 1.08)
+        ax_bar.set_xlabel("Weight", fontsize=8)
+        ax_bar.set_title(f"Attention ({model_name})", fontsize=9, fontweight="bold")
+        ax_bar.spines["top"].set_visible(False)
+        ax_bar.spines["right"].set_visible(False)
+        for i, w in enumerate(weights):
+            ax_bar.text(float(w) + 0.02, i, f"{float(w)*100:.0f}%", va="center", fontsize=9, fontweight="bold", color=colors[i])
+        ax_bar.invert_yaxis()
+
+        # ── radar chart ──
+        n = len(names)
+        angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+        vals = [float(w) for w in weights]
+        angles.append(angles[0])
+        vals.append(vals[0])
+        ax_radar.fill(angles, vals, alpha=0.2, color="#4C72B0")
+        ax_radar.plot(angles, vals, linewidth=2, color="#4C72B0")
+        ax_radar.set_xticks(angles[:-1])
+        ax_radar.set_xticklabels(names, fontsize=7.5, fontweight="bold")
+        ax_radar.set_ylim(0, 1)
+        ax_radar.set_yticks([0.25, 0.5, 0.75])
+        ax_radar.set_yticklabels(["", "0.5", ""], fontsize=6, color="#aaa")
+        ax_radar.set_title("Radar", fontsize=8, fontweight="bold", pad=12)
+        ax_radar.grid(alpha=0.3)
+
+        # ── trend chart ──
+        if len(self._history) > 2:
+            for idx, name in enumerate(names):
+                raw = [float(h[idx]) for h in self._history]
+                smoothed = _ema_smooth(raw, alpha=0.35)
+                ax_trend.plot(smoothed, color=_MODALITY_COLORS.get(name, "#999"), linewidth=1.5)
+                ax_trend.fill_between(range(len(smoothed)), smoothed, alpha=0.06, color=_MODALITY_COLORS.get(name, "#999"))
+            ax_trend.set_ylim(0, 1)
+            ax_trend.set_title("Trend", fontsize=8, fontweight="bold")
+            ax_trend.set_xlabel("Win", fontsize=7)
+            ax_trend.grid(alpha=0.2, linestyle="--")
+            ax_trend.tick_params(labelsize=6)
+            ax_trend.spines["top"].set_visible(False)
+            ax_trend.spines["right"].set_visible(False)
         else:
-            names = self._modality_names[:len(weights)]
-            colors = [_MODALITY_COLORS.get(n, "#999999") for n in names]
-            y_pos = list(range(len(names)))
+            ax_trend.text(0.5, 0.5, "Accumulating\u2026", ha="center", va="center", fontsize=7, color="#aaa", style="italic", transform=ax_trend.transAxes)
+            ax_trend.set_axis_off()
 
-            axes[0].barh(
-                y_pos, weights, color=colors,
-                edgecolor="white", linewidth=0.8, height=0.65,
-            )
-            axes[0].set_yticks(y_pos)
-            axes[0].set_yticklabels(names, fontsize=10, fontweight="bold")
-            axes[0].set_xlim(0, 1.08)
-            axes[0].set_xlabel("Weight", fontsize=9)
-            axes[0].set_title(
-                f"Modality Contributions ({model_name})",
-                fontsize=10, fontweight="bold",
-            )
-            axes[0].spines["top"].set_visible(False)
-            axes[0].spines["right"].set_visible(False)
+        fig.tight_layout(pad=0.8)
+        self._prev_fig = fig
+        return fig
 
-            for i, w in enumerate(weights):
-                axes[0].text(
-                    float(w) + 0.02, i,
-                    f"{float(w) * 100:.1f}%",
-                    va="center", fontsize=9.5, fontweight="bold",
-                    color=colors[i],
-                )
-            axes[0].invert_yaxis()
-
-            if len(self._history) > 2:
-                for idx, name in enumerate(names):
-                    raw = [float(h[idx]) for h in self._history]
-                    smoothed = _ema_smooth(raw, alpha=0.35)
-                    axes[1].plot(
-                        smoothed,
-                        color=_MODALITY_COLORS.get(name, "#999999"),
-                        linewidth=1.8, label=name,
-                    )
-                    axes[1].fill_between(
-                        range(len(smoothed)), smoothed,
-                        alpha=0.08,
-                        color=_MODALITY_COLORS.get(name, "#999999"),
-                    )
-                axes[1].set_ylim(0, 1)
-                axes[1].set_title("Trend", fontsize=9, fontweight="bold")
-                axes[1].set_xlabel("Window", fontsize=8)
-                axes[1].grid(alpha=0.2, linestyle="--")
-                axes[1].tick_params(labelsize=7)
-                axes[1].spines["top"].set_visible(False)
-                axes[1].spines["right"].set_visible(False)
-            else:
-                axes[1].text(
-                    0.5, 0.5, "Accumulating\nhistory\u2026",
-                    ha="center", va="center", fontsize=8,
-                    color="#aaaaaa", style="italic",
-                    transform=axes[1].transAxes,
-                )
-                axes[1].set_axis_off()
-
-        fig.tight_layout(pad=1.2)
+    def _unimodal_placeholder(self, model_name: str) -> Figure:
+        fig, ax = plt.subplots(figsize=(7, 3), dpi=110)
+        fig.patch.set_facecolor("white")
+        ax.text(
+            0.5, 0.5,
+            f"{model_name} (EEG only)\n"
+            "\u2500" * 28 + "\n"
+            "Unimodal model \u2014 attention\n"
+            "breakdown not available.\n\n"
+            "Switch to DGCCA-AM for\n"
+            "multimodal radar + bar chart.",
+            ha="center", va="center", fontsize=9.5, color="#777",
+            transform=ax.transAxes, family="monospace", linespacing=1.4,
+        )
+        ax.set_axis_off()
+        fig.tight_layout()
         self._prev_fig = fig
         return fig
 

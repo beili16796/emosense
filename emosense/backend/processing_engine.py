@@ -270,8 +270,8 @@ class ProcessingEngine:
                 pass
 
         return InferenceResult(
-            valence=valence,
-            arousal=arousal,
+            valence=float(np.clip(valence, -1, 1)),
+            arousal=float(np.clip(arousal, -1, 1)),
             label=label,
             confidence=float(proba.max()),
             proba=proba,

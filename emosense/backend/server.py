@@ -224,11 +224,12 @@ async def _run_processing(task_id: str) -> None:
 
     try:
         assert engine is not None
+        active_model = engine.model_manager.get_active_model_name()
         for result in engine.process_file(
             parsed,
             window_sec=ctx["window_sec"],
             overlap=ctx["overlap"],
-            model_name=ctx["model_name"],
+            model_name=active_model,
             file_hash=ctx.get("file_hash"),
         ):
             if CANCELLED_TASKS.get(task_id, False):

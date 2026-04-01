@@ -261,12 +261,11 @@ class ProcessingEngine:
         attention = None
         if hasattr(model, "get_attention_weights"):
             try:
-                if model_name == "DGCCA-AM":
-                    attn = model.get_attention_weights(model_input)
-                else:
-                    attn = model.get_attention_weights()
+                attn = model.get_attention_weights()
                 if attn is not None:
-                    attention = np.asarray(attn)[0] if np.asarray(attn).ndim > 1 else np.asarray(attn)
+                    attention = np.asarray(attn)
+                    if attention.ndim > 1:
+                        attention = attention[0]
             except Exception:
                 pass
 

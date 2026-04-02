@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.figure import Figure  # noqa: E402
 
-from emosense.visualization import ContributionPlot, TopoMapPlot, VATrajectoryPlot
+from emosense.visualization import ContributionPlot, TopoMapPlot, VATrajectoryPlot, WaveformSyncPlot
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ MODEL_NAMES_DEFAULT = ["CNN-LSTM", "DGCNN", "Transformer-MM", "BiDAE", "DGCCA-AM
 va_plot = VATrajectoryPlot(history_len=20)
 topo_plot: TopoMapPlot | None = None
 contrib_plot = ContributionPlot()
+waveform_plot = WaveformSyncPlot(display_seconds=10.0, fs=128)
 
 
 def _get_topo_plot(ch_names: list[str] | None = None, fs: int = 128) -> TopoMapPlot:
@@ -134,13 +135,13 @@ def on_file_upload(
     window_sec: float,
     overlap: float,
     model_name: str,
-) -> tuple[str, str, Any]:
-    """Upload file to backend, return format info, task_id, and enable button."""
+) -> tuple[str, str, Any, int]:
+    """Upload file to backend, return format info, task_id, enable button, and est. segments."""
     if file is None:
-        return "No file selected", "", gr.update(interactive=False)
+        return "No file selected", "", gr.update(interactive=False), 0
 
     if not _backend_online():
-        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False)
+        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False), 0
 
     try:
         with open(file, "rb") as f:
@@ -165,16 +166,17 @@ def on_file_upload(
             f"Channels: {info['n_channels']} | "
             f"Est. segments: {info['estimated_segments']}"
         )
-        return fmt_text, info["task_id"], gr.update(interactive=True)
+        return fmt_text, info["task_id"], gr.update(interactive=True), info["estimated_segments"]
     except httpx.ConnectError:
-        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False)
+        return "ERROR: Backend offline. Is the server running?", "", gr.update(interactive=False), 0
     except Exception as exc:
-        return f"Error: {exc}", "", gr.update(interactive=False)
+        return f"Error: {exc}", "", gr.update(interactive=False), 0
 
 
 def on_analyze(
     task_id: str,
     model_name: str,
+    stream_speed: float = 0.0,
 ) -> tuple[str, int]:
     """Start processing the uploaded file."""
     if not task_id:
@@ -184,21 +186,25 @@ def on_analyze(
         return "Backend offline", 0
 
     try:
-        httpx.post(
+        resp = httpx.post(
             f"{BACKEND_URL}/models/active",
             json={"name": model_name},
             timeout=5.0,
         )
-    except Exception:
-        pass
+        resp.raise_for_status()
+    except Exception as e:
+        logger.error("Failed to switch backend to %s: %s", model_name, e)
+        return f"Model switch failed: {e}", 0
 
     try:
         resp = httpx.post(
             f"{BACKEND_URL}/process/{task_id}",
+            params={"stream_interval": str(stream_speed)},
             timeout=5.0,
         )
         resp.raise_for_status()
-        return f"Processing\u2026 (task {task_id})", 0
+        mode = "Live streaming" if stream_speed > 0 else "Processing"
+        return f"{mode}\u2026 (task {task_id})", 0
     except Exception as exc:
         return f"Failed to start: {exc}", 0
 
@@ -206,18 +212,19 @@ def on_analyze(
 def on_model_switch(model_name: str) -> None:
     """Switch active model mid-session."""
     try:
-        httpx.post(
+        resp = httpx.post(
             f"{BACKEND_URL}/models/active",
             json={"name": model_name},
             timeout=5.0,
         )
-    except Exception:
-        pass
+        resp.raise_for_status()
+        logger.info(f"Model switch successful: {model_name}")
+    except Exception as e:
+        logger.error(f"Model switch failed: {model_name} - {e}")
 
 
-def on_model_change(model_name: str) -> tuple[str, str]:
-    """Return markdown metadata for the selected model."""
-    on_model_switch(model_name)
+def _get_model_info_md(model_name: str) -> tuple[str, str]:
+    """Return markdown metadata for the selected model (without switching backend)."""
     models = {m["name"]: m for m in _fetch_models()}
     info = models.get(model_name)
     if not info:
@@ -238,10 +245,16 @@ def on_model_change(model_name: str) -> tuple[str, str]:
     return info_md, status
 
 
+def on_model_change(model_name: str) -> tuple[str, str]:
+    """Return markdown metadata for the selected model."""
+    on_model_switch(model_name)
+    return _get_model_info_md(model_name)
+
+
 def on_demo_load() -> tuple[str, Any, str, str]:
     names = _fetch_model_names() or MODEL_NAMES_DEFAULT
     first = names[0] if names else "DGCNN"
-    info_md, status = on_model_change(first)
+    info_md, status = _get_model_info_md(first)
     return (
         "Backend online" if _backend_online() else "Backend offline - waiting",
         gr.update(choices=names, value=first),
@@ -250,7 +263,7 @@ def on_demo_load() -> tuple[str, Any, str, str]:
     )
 
 
-def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, str, str, int]:
+def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, Any, float, list, str, str, str, int]:
     """Reset all state and plots."""
     if task_id:
         try:
@@ -259,6 +272,7 @@ def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, s
             pass
     va_plot.reset()
     contrib_plot.reset()
+    waveform_plot.reset()
 
     return (
         "Ready",
@@ -267,11 +281,13 @@ def on_reset(task_id: str) -> tuple[str, str, Any, Any, Any, Any, float, list, s
         gr.update(value=None),
         gr.update(value=None),
         gr.update(value=None),
+        gr.update(value=None),
         0.0,
         [],
         "\u2014",
-        "",       # clear task_id
-        0,        # reset cursor
+        "",
+        "t = 0.0 s",
+        0,
     )
 
 
@@ -292,13 +308,16 @@ def poll_updates(
     task_id: str,
     results_cursor: int,
     current_band: str,
-) -> tuple[Any, Any, Any, Any, float, list, str, str, int, Any]:
-    """Timer callback — poll /results/latest and refresh UI."""
+    est_segments: int = 0,
+) -> tuple[Any, Any, Any, Any, Any, float, list, str, str, str, int, Any]:
+    """Timer callback — poll /results/latest and refresh all panels + sync timestamp."""
+    no_update = (
+        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+        gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+        gr.update(), gr.update(),
+    )
     if not task_id:
-        return (
-            gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-        )
+        return no_update
 
     try:
         resp = httpx.get(
@@ -309,10 +328,7 @@ def poll_updates(
         resp.raise_for_status()
         data = resp.json()
     except Exception:
-        return (
-            gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
-        )
+        return no_update
 
     new_results = data.get("results", [])
     next_idx = data.get("next_idx", results_cursor)
@@ -320,8 +336,9 @@ def poll_updates(
     inference_results = [r for r in new_results if r.get("type") == "inference"]
     if not inference_results:
         return (
-            gr.update(), gr.update(), gr.update(), gr.update(),
-            gr.update(), gr.update(), gr.update(), gr.update(), next_idx, gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
+            next_idx, gr.update(),
         )
 
     latest = inference_results[-1]
@@ -341,14 +358,37 @@ def poll_updates(
     if de_features_raw is not None:
         try:
             de_arr = np.asarray(de_features_raw, dtype=np.float64)
-            if de_arr.shape[0] != tp.n_channels:
-                tp = _get_topo_plot(ch_names=None, fs=128)
+            n_ch = de_arr.shape[0]
+            if n_ch != tp.n_channels:
+                from emosense.backend.file_parser import (
+                    DEAP_EEG_CHANNELS,
+                    DREAMER_14_CHANNELS,
+                    SEED_62_CHANNELS,
+                )
+                if n_ch == 14:
+                    tp = _get_topo_plot(ch_names=list(DREAMER_14_CHANNELS), fs=128)
+                elif n_ch == 62:
+                    tp = _get_topo_plot(ch_names=list(SEED_62_CHANNELS), fs=200)
+                elif n_ch == 32:
+                    tp = _get_topo_plot(ch_names=list(DEAP_EEG_CHANNELS), fs=128)
+                else:
+                    ch_names = [f"Ch{i}" for i in range(n_ch)]
+                    tp = _get_topo_plot(ch_names=ch_names, fs=128)
             topo_fig = tp.update(de_arr, band=current_band)
         except Exception as exc:
             logger.warning("Topo-map update failed: %s", exc)
 
     weights_arr = np.asarray(attention_weights) if attention_weights else None
     contrib_fig = contrib_plot.update(weights_arr, model_name=model_name)
+
+    time_sec = latest.get("time_start_sec", 0.0)
+    if de_features_raw is not None:
+        de_arr_np = np.asarray(de_features_raw, dtype=np.float64)
+        n_ch = de_arr_np.shape[0]
+        alpha_idx = 2
+        eeg_signal = de_arr_np[:, alpha_idx] if de_arr_np.shape[1] > alpha_idx else de_arr_np[:, 0]
+        waveform_plot.push(eeg_snippet=eeg_signal, time_start=time_sec)
+    wave_fig = waveform_plot.render(current_time=time_sec)
 
     all_results_resp = httpx.get(
         f"{BACKEND_URL}/results/latest",
@@ -358,8 +398,10 @@ def poll_updates(
     all_inference = [r for r in all_results_resp.get("results", []) if r.get("type") == "inference"]
     timeline_fig = _plot_timeline(all_inference)
 
-    total_estimated = max(len(all_inference), 1)
+    total_estimated = max(est_segments, len(all_inference), 1)
     progress = min(len(all_inference) / total_estimated, 1.0)
+    if data.get("is_complete", False):
+        progress = 1.0
 
     table_data = [
         [
@@ -379,6 +421,7 @@ def poll_updates(
         if data.get("is_complete", False)
         else f"Processing: {len(all_inference)} windows"
     )
+    sync_text = f"t = {time_sec:.1f} s"
 
     last_de_state = de_features_raw
 
@@ -387,10 +430,12 @@ def poll_updates(
         topo_fig,
         contrib_fig,
         timeline_fig,
+        wave_fig,
         progress,
         table_data,
         pred_text,
         status_text,
+        sync_text,
         next_idx,
         last_de_state,
     )
@@ -417,14 +462,27 @@ def create_demo() -> gr.Blocks:
     ) as demo:
         gr.Markdown("# EmoSense \u2014 Physiological Emotion Analysis")
 
+        with gr.Accordion("Instructions", open=False):
+            gr.Markdown(
+                "**Welcome to EmoSense!**\n\n"
+                "1. Upload a physiological signal file (.mat, .dat, .npz, or .csv)\n"
+                "2. Optionally upload the stimulus video that was shown during recording\n"
+                "3. Select a model from the dropdown\n"
+                "4. Click **Start Analysis** — start the video playback at the same time\n"
+                "5. Watch all panels update in sync: V-A trajectory, topomap, attention radar, waveform\n"
+                "6. The \u23f1 timestamp display tracks the current analysis window\n\n"
+                "*Session duration: ~10 minutes*"
+            )
+
         uploaded_task_id = gr.State(value="")
         results_cursor = gr.State(value=0)
         last_de_features = gr.State(value=None)
+        estimated_segments = gr.State(value=0)
 
         with gr.Row():
             # LEFT PANEL
             with gr.Column(scale=1, min_width=260):
-                gr.Markdown("### File Upload")
+                gr.Markdown("### Signal & Stimulus")
                 file_input = gr.File(
                     label="Upload Signal File",
                     file_types=[".dat", ".mat", ".npz", ".csv", ".bdf"],
@@ -435,6 +493,10 @@ def create_demo() -> gr.Blocks:
                     value="",
                     interactive=False,
                     lines=2,
+                )
+                gr.Video(
+                    label="\U0001f3ac Stimulus Video (optional)",
+                    height=160,
                 )
 
                 gr.Markdown("### Parameters")
@@ -462,6 +524,12 @@ def create_demo() -> gr.Blocks:
                     "_Demo presets auto-configure window, overlap, and model selection._"
                 )
 
+                stream_speed = gr.Slider(
+                    label="Stream Speed (sec/window)",
+                    minimum=0.0, maximum=2.0, value=0.5, step=0.1,
+                    info="0 = instant, 0.5 = ~2 windows/sec (BCI simulation)",
+                )
+
                 with gr.Row():
                     analyze_btn = gr.Button("Start Analysis", variant="primary", interactive=False)
                     reset_btn = gr.Button("Reset", variant="stop")
@@ -487,6 +555,12 @@ def create_demo() -> gr.Blocks:
                         interactive=False,
                         scale=1,
                     )
+                    sync_timestamp = gr.Textbox(
+                        label="\u23f1 Sync Time",
+                        value="t = 0.0 s",
+                        interactive=False,
+                        scale=1,
+                    )
 
                 with gr.Row():
                     va_plot_component = gr.Plot(label="V-A Trajectory")
@@ -495,6 +569,8 @@ def create_demo() -> gr.Blocks:
                 with gr.Row():
                     contrib_plot_component = gr.Plot(label="Modality Contribution")
                     timeline_plot_component = gr.Plot(label="Prediction Timeline")
+
+                waveform_component = gr.Plot(label="Multimodal Signal Monitor")
 
                 progress_bar = gr.Slider(
                     label="Progress",
@@ -512,16 +588,18 @@ def create_demo() -> gr.Blocks:
         timer = gr.Timer(every=0.5)
         timer.tick(
             fn=poll_updates,
-            inputs=[uploaded_task_id, results_cursor, band_radio],
+            inputs=[uploaded_task_id, results_cursor, band_radio, estimated_segments],
             outputs=[
                 va_plot_component,
                 topo_plot_component,
                 contrib_plot_component,
                 timeline_plot_component,
+                waveform_component,
                 progress_bar,
                 results_table,
                 pred_label,
                 status_box,
+                sync_timestamp,
                 results_cursor,
                 last_de_features,
             ],
@@ -531,12 +609,12 @@ def create_demo() -> gr.Blocks:
         file_input.upload(
             fn=on_file_upload,
             inputs=[file_input, window_slider, overlap_slider, model_dd],
-            outputs=[format_display, uploaded_task_id, analyze_btn],
+            outputs=[format_display, uploaded_task_id, analyze_btn, estimated_segments],
         )
 
         analyze_btn.click(
             fn=on_analyze,
-            inputs=[uploaded_task_id, model_dd],
+            inputs=[uploaded_task_id, model_dd, stream_speed],
             outputs=[status_box, results_cursor],
         )
 
@@ -562,10 +640,12 @@ def create_demo() -> gr.Blocks:
                 topo_plot_component,
                 contrib_plot_component,
                 timeline_plot_component,
+                waveform_component,
                 progress_bar,
                 results_table,
                 pred_label,
                 uploaded_task_id,
+                sync_timestamp,
                 results_cursor,
             ],
         )

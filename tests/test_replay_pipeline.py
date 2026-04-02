@@ -9,7 +9,6 @@ from __future__ import annotations
 from collections.abc import Generator
 from unittest.mock import MagicMock
 
-import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 

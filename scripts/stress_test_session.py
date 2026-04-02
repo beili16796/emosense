@@ -146,7 +146,7 @@ def run_stress_test(
     mem_end = _get_memory_mb()
 
     print(f"\n{'='*60}")
-    print(f"STRESS TEST RESULTS")
+    print("STRESS TEST RESULTS")
     print(f"{'='*60}")
     print(f"Iterations:    {n_iterations}")
     print(f"Failures:      {len(failures)}")

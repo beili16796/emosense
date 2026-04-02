@@ -136,12 +136,19 @@ class ProcessingEngine:
 
         for idx in range(len(all_windows["de"])):
             de_feat = all_windows["de"][idx]
+            has_nan = bool(np.isnan(de_feat).any())
+            if has_nan:
+                de_feat_safe = np.nan_to_num(de_feat, nan=0.0)
+            else:
+                de_feat_safe = de_feat
             t0 = time.perf_counter()
-            result = self._run_inference(de_feat, parsed_data, all_windows, idx, file_format)
+            result = self._run_inference(de_feat_safe, parsed_data, all_windows, idx, file_format)
             result.latency_ms = (time.perf_counter() - t0) * 1000
             result.trial_idx = int(all_windows["trial_idx"][idx])
             result.window_idx = int(all_windows["win_idx"][idx])
             result.time_start_sec = float(all_windows["time_sec"][idx])
+            if has_nan:
+                result.de_features = de_feat
             yield result
 
     def _extract_all_windows(
@@ -254,18 +261,17 @@ class ProcessingEngine:
         attention = None
         if hasattr(model, "get_attention_weights"):
             try:
-                if model_name == "DGCCA-AM":
-                    attn = model.get_attention_weights(model_input)
-                else:
-                    attn = model.get_attention_weights()
+                attn = model.get_attention_weights()
                 if attn is not None:
-                    attention = np.asarray(attn)[0] if np.asarray(attn).ndim > 1 else np.asarray(attn)
+                    attention = np.asarray(attn)
+                    if attention.ndim > 1:
+                        attention = attention[0]
             except Exception:
                 pass
 
         return InferenceResult(
-            valence=valence,
-            arousal=arousal,
+            valence=float(np.clip(valence, -1, 1)),
+            arousal=float(np.clip(arousal, -1, 1)),
             label=label,
             confidence=float(proba.max()),
             proba=proba,
@@ -315,28 +321,82 @@ class ProcessingEngine:
             self._de_extractors[fs] = DEExtractor(fs=fs)
         return self._de_extractors[fs]
 
+    @staticmethod
+    def _model_param(model: Any, key: str, default: int) -> int:
+        """Read a parameter from model attribute or _params dict."""
+        val = getattr(model, key, None)
+        if val is not None:
+            return int(val)
+        params = getattr(model, "_params", {})
+        return int(params.get(key, default))
+
+    @staticmethod
+    def _pad_flat(flat: np.ndarray, model: Any) -> np.ndarray:
+        """Zero-pad flattened features to match model's expected input size."""
+        try:
+            expected = int(getattr(model, "_in_features", 0) or 0)
+        except (TypeError, ValueError):
+            return flat
+        if expected > 0 and flat.shape[-1] < expected:
+            pad_width = expected - flat.shape[-1]
+            flat = np.pad(flat, ((0, 0), (0, pad_width)), constant_values=0)
+        return flat
+
     def _make_model_input(self, model_name: str, de_feat: np.ndarray, model: Any) -> Any:
         """Adapt one DE window to each EmoKit model's expected input format."""
         x_de = np.asarray(de_feat, dtype=np.float32)[np.newaxis, ...]
         flat = x_de.reshape(x_de.shape[0], -1)
 
+        n_feat1 = self._model_param(model, "n_feat1", 0) or self._model_param(model, "n_feat_eeg", 0) or self._model_param(model, "n_feat", 0)
+
         if model_name == "BiDAE":
-            mod2_dim = int(getattr(model, "n_feat2", 3))
-            return {"mod1": flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
+            mod2_dim = self._model_param(model, "n_feat2", 3)
+            eeg_dim = n_feat1 or 160
+            eeg_flat = self._pad_to(flat, eeg_dim)
+            return {"mod1": eeg_flat, "mod2": np.zeros((1, mod2_dim), dtype=np.float32)}
         if model_name == "DGCCA-AM":
-            gsr_dim = int(getattr(model, "n_feat_gsr", 3))
-            ecg_dim = int(getattr(model, "n_feat_ecg", 5))
+            gsr_dim = self._model_param(model, "n_feat_gsr", 3)
+            ecg_dim = self._model_param(model, "n_feat_ecg", 5)
+            eeg_dim = self._model_param(model, "n_feat_eeg", 160)
+            eeg_flat = self._pad_to(flat, eeg_dim)
             return {
-                "eeg": flat,
+                "eeg": eeg_flat,
                 "gsr": np.zeros((1, gsr_dim), dtype=np.float32),
                 "ecg": np.zeros((1, ecg_dim), dtype=np.float32),
             }
         if model_name == "Transformer-MM":
-            periph_dim = int(getattr(model, "n_peripheral_feat", 7))
+            periph_dim = self._model_param(model, "n_peripheral_feat", 8)
+            try:
+                in_feat = int(getattr(model, "_in_features", 0) or 0)
+            except (TypeError, ValueError):
+                in_feat = 0
+            if in_feat > 0:
+                eeg_dim = in_feat - periph_dim
+                n_bands = x_de.shape[-1]
+                n_ch_target = eeg_dim // n_bands if n_bands > 0 else x_de.shape[1]
+            else:
+                n_ch_target = x_de.shape[1]
+            if x_de.shape[1] < n_ch_target:
+                pad_ch = n_ch_target - x_de.shape[1]
+                x_de = np.pad(x_de, ((0, 0), (0, pad_ch), (0, 0)), constant_values=0)
             return {
                 "eeg": x_de,
                 "peripheral": np.zeros((1, periph_dim), dtype=np.float32),
             }
         if model_name == "DGCNN":
+            n_ch_cfg = self._model_param(model, "n_channels", x_de.shape[1])
+            if x_de.shape[1] < n_ch_cfg:
+                pad_ch = n_ch_cfg - x_de.shape[1]
+                x_de = np.pad(x_de, ((0, 0), (0, pad_ch), (0, 0)), constant_values=0)
             return x_de
+
+        flat = self._pad_flat(flat, model)
         return flat
+
+    @staticmethod
+    def _pad_to(arr: np.ndarray, target_dim: int) -> np.ndarray:
+        """Zero-pad last dimension to target_dim if smaller."""
+        if arr.shape[-1] < target_dim:
+            pad_w = target_dim - arr.shape[-1]
+            arr = np.pad(arr, ((0, 0), (0, pad_w)), constant_values=0)
+        return arr

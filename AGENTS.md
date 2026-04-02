@@ -16,15 +16,15 @@ The project depends on `emokit`, a sibling ML library not included in this repo.
 
 The codebase uses `gr.Timer(every=0.5)` but no released Gradio version uses the `every` keyword — the parameter is `value` in Gradio 4.37+. After installing Gradio, a patch is applied to the installed `gradio/components/timer.py` to accept `every` as an alias for `value`. Additionally, `gradio_client/utils.py` requires a patch to handle Pydantic v2 JSON schemas (bool-typed `additionalProperties`). The update script handles both patches automatically.
 
-Use `gradio==4.42.0` and `huggingface_hub<0.25` for compatibility.
+Use `gradio==4.42.0` and `huggingface_hub<0.25` for compatibility. Additionally, `fastapi==0.111.0` and `pydantic<2.10` are required — newer versions of FastAPI/Starlette/Pydantic break Gradio's internal route serialization. The system Jinja2 (3.1.2) is too old; ensure `jinja2>=3.1.4` is installed via pip.
 
 ### Config symlink
 
 The backend resolves `config/models.yaml` relative to the repo root, but the actual file is at `emosense/config/models.yaml`. A symlink `config -> emosense/config` is needed at the workspace root.
 
-### Missing `get_active_model_name()` method
+### Realistic demo data
 
-`ModelManager` in `emosense/backend/inference.py` is missing a `get_active_model_name()` method that `server.py` and `processing_engine.py` call. The method was added during setup.
+Use `demo_data/test_deap_realistic.mat` and `demo_data/test_seedv_realistic.npz` for meaningful visualisations (frontal asymmetry, emotion-template DE). Generate with `python3 scripts/create_test_mat.py --format deap --realistic --output demo_data/test_deap_realistic.mat`.
 
 ### Running the application
 
@@ -44,8 +44,7 @@ python3 scripts/generate_demo_checkpoints.py
 python3 -m pytest tests/ -v
 ```
 
-55 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
-47 tests pass, 4 skip (TopoMapPlot tests that require specific MNE channel montage matching).
+107 pass, 12 skip, 0 failures. All tests pass cleanly.
 
 ### Linting
 
@@ -53,11 +52,11 @@ python3 -m pytest tests/ -v
 python3 -m ruff check emosense/ tests/
 ```
 
-Pre-existing F401 (unused import) warnings in the original code.
+0 errors or warnings after lint cleanup.
 
 ### File format support
 
-The parser supports: `.dat` (DEAP pickle), `.mat` (auto-detects DEAP vs SEED), `.npz` (SEED-V DE features), `.csv`, `.bdf`. Synthetic test files are in `demo_data/` and can be regenerated via `scripts/create_test_mat.py`.
+The parser supports: `.dat` (DEAP pickle), `.mat` (auto-detects DEAP vs DREAMER vs SEED), `.npz` (SEED-V DE features), `.csv`, `.bdf`. DREAMER .mat files are detected by the top-level `DREAMER` variable (14-channel Emotiv EPOC layout). Models handle channel mismatch via zero-padding. Synthetic test files are in `demo_data/` and can be regenerated via `scripts/create_test_mat.py` (supports `--format deap/seedv/dreamer`).
 
 ### API endpoints
 
@@ -77,4 +76,4 @@ PYTHONPATH=/workspace python3 scripts/benchmark_latency.py --n-warmup 20 --n-mea
 ```
 
 LaTeX table saved to `results/latency_benchmark.tex`.
-11 pre-existing F401 (unused import) warnings in the original code.
+All lint warnings have been fixed.

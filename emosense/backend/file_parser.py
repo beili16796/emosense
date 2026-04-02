@@ -35,6 +35,11 @@ SEED_62_CHANNELS: list[str] = [
 # Keep backward-compatible alias
 SEED_CHANNELS_62 = SEED_62_CHANNELS
 
+DREAMER_14_CHANNELS: list[str] = [
+    "AF3", "F7", "F3", "FC5", "T7", "P7", "O1",
+    "O2", "P8", "T8", "FC6", "F4", "F8", "AF4",
+]
+
 
 class FileParser:
     """Unified parser for uploaded physiological signal files.
@@ -135,14 +140,18 @@ class FileParser:
 
     @classmethod
     def _parse_mat_auto(cls, filepath: Path) -> dict[str, Any]:
-        """Auto-detect whether a .mat file is DEAP or SEED format and parse.
+        """Auto-detect whether a .mat file is DEAP, DREAMER, or SEED format.
 
         DEAP .mat files contain ``data`` (40, 40, 8064) and ``labels`` (40, 4).
+        DREAMER .mat files contain a top-level ``DREAMER`` struct.
         SEED .mat files contain ``de_LDS``, ``de_movingAve``, or EEG trial keys.
         """
         import scipy.io
 
         mat = scipy.io.loadmat(str(filepath), squeeze_me=True)
+
+        if "DREAMER" in mat:
+            return cls._parse_dreamer_mat(filepath)
 
         if "data" in mat and "labels" in mat:
             return cls._parse_deap_mat(filepath, mat)
@@ -182,6 +191,69 @@ class FileParser:
             "fs": 128,
             "ch_names": list(DEAP_EEG_CHANNELS),
             "format": "DEAP .mat",
+            "pre_extracted": False,
+        }
+
+    @staticmethod
+    def _parse_dreamer_mat(filepath: Path) -> dict[str, Any]:
+        """Parse DREAMER .mat file (Emotiv EPOC 14-channel EEG).
+
+        DREAMER structure (loaded with ``struct_as_record=False``):
+        - ``DREAMER.Data[i].EEG.stimuli[k]`` → shape ``(M, 14)``
+        - ``DREAMER.Data[i].ScoreValence[k]`` → float 1-5
+        - 14 channels: AF3/F7/F3/FC5/T7/P7/O1/O2/P8/T8/FC6/F4/F8/AF4
+        - Sampling rate: 128 Hz
+
+        Only the first subject is returned (index 0).
+        """
+        import scipy.io
+
+        mat = scipy.io.loadmat(
+            str(filepath),
+            squeeze_me=True,
+            struct_as_record=False,
+        )
+        dreamer = mat["DREAMER"]
+        subject_data = dreamer.Data
+        if not hasattr(subject_data, "__len__"):
+            subject_data = [subject_data]
+        n_subjects = len(subject_data)
+
+        subj = subject_data[0]
+        stimuli = subj.EEG.stimuli
+        if not hasattr(stimuli, "__len__"):
+            stimuli = [stimuli]
+        n_stim = len(stimuli)
+
+        scores = subj.ScoreValence
+        if not hasattr(scores, "__len__"):
+            scores = [scores]
+
+        trials: list[np.ndarray] = []
+        labels: list[int] = []
+        for k in range(n_stim):
+            eeg_trial = np.asarray(stimuli[k], dtype=np.float32)
+            if eeg_trial.ndim == 1:
+                continue
+            if eeg_trial.shape[-1] == 14:
+                eeg_trial = eeg_trial.T
+            trials.append(eeg_trial)
+            val = float(scores[k]) if np.isscalar(scores[k]) else float(np.asarray(scores[k]).flat[0])
+            labels.append(1 if val > 3 else 0)
+
+        eeg = np.stack(trials, axis=0)
+
+        return {
+            "eeg": eeg,
+            "gsr": None,
+            "ecg": None,
+            "labels": np.array(labels, dtype=np.int64),
+            "fs": 128,
+            "ch_names": list(DREAMER_14_CHANNELS),
+            "format": "DREAMER .mat",
+            "n_eeg_channels": 14,
+            "n_subjects": n_subjects,
+            "n_stimuli": n_stim,
             "pre_extracted": False,
         }
 

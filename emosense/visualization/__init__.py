@@ -9,5 +9,6 @@ from __future__ import annotations
 from emosense.visualization.contribution import ContributionPlot
 from emosense.visualization.topo_map import TopoMapPlot
 from emosense.visualization.va_plot import VATrajectoryPlot
+from emosense.visualization.waveform_sync import WaveformSyncPlot
 
-__all__ = ["ContributionPlot", "TopoMapPlot", "VATrajectoryPlot"]
+__all__ = ["ContributionPlot", "TopoMapPlot", "VATrajectoryPlot", "WaveformSyncPlot"]

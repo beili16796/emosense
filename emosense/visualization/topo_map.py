@@ -2,7 +2,11 @@
 # Copyright (c) 2024 EmoKit Contributors
 # See LICENSE for full text.
 
-"""Topographic EEG map using MNE for differential-entropy visualisation."""
+"""Topographic EEG map using MNE for differential-entropy visualisation.
+
+Publication-quality rendering with perceptually uniform colormaps,
+contour lines, and prominent frontal alpha asymmetry annotations.
+"""
 
 from __future__ import annotations
 
@@ -28,16 +32,20 @@ except ImportError:
     _MNE_AVAILABLE = False
     logger.warning("MNE not installed — topomap will use fallback bar chart")
 
+_BAND_CMAP: dict[str, str] = {
+    "delta": "Blues",
+    "theta": "Purples",
+    "alpha": "RdBu_r",
+    "beta": "YlOrRd",
+    "gamma": "inferno",
+}
+
 
 class TopoMapPlot:
     """Topographic heatmap of per-channel differential entropy.
 
-    Supports both 32-channel (DEAP) and 62-channel (SEED/SEED-V) layouts.
-
-    Args:
-        ch_names: EEG channel names matching the chosen montage.
-        fs: Sampling frequency in Hz.
-        montage_name: Standard montage for electrode positions.
+    Supports 14-channel (DREAMER), 32-channel (DEAP), and 62-channel
+    (SEED/SEED-V) layouts with publication-quality rendering.
     """
 
     BAND_IDX = BAND_IDX
@@ -78,18 +86,8 @@ class TopoMapPlot:
         )
 
     def set_band(self, band: str) -> None:
-        """Set the default frequency band.
-
-        Args:
-            band: One of delta / theta / alpha / beta / gamma.
-
-        Raises:
-            ValueError: If *band* is not recognised.
-        """
         if band not in _BAND_NAMES:
-            raise ValueError(
-                f"Unknown band {band!r}. Choose from {_BAND_NAMES}",
-            )
+            raise ValueError(f"Unknown band {band!r}. Choose from {_BAND_NAMES}")
         self._current_band = band
 
     @property
@@ -102,15 +100,7 @@ class TopoMapPlot:
         band: str | None = None,
         annotate_asymmetry: bool = True,
     ) -> Figure:
-        """Render a topographic map for the selected frequency band.
-
-        Args:
-            de_features: DE values of shape ``(n_channels, 5)``.
-            band: Override current band selection.
-
-        Returns:
-            Matplotlib Figure with the topomap.
-        """
+        """Render a publication-quality topographic map."""
         band = band or self._current_band
         assert de_features.shape[0] == self.n_channels, (
             f"Expected {self.n_channels} channels, got {de_features.shape[0]}"
@@ -122,39 +112,69 @@ class TopoMapPlot:
         if self._prev_fig is not None:
             plt.close(self._prev_fig)
 
+        nan_ratio = np.isnan(values).mean()
+        if nan_ratio > 0.5:
+            return self._sensor_disconnected(band, nan_ratio)
+
         if not _MNE_AVAILABLE or self._info is None:
             return self._fallback_heatmap(de_features, band)
 
-        fig, ax = plt.subplots(1, 1, figsize=(4, 4), dpi=100)
+        cmap = _BAND_CMAP.get(band, "RdBu_r")
+
+        fig, ax = plt.subplots(1, 1, figsize=(4.2, 4.2), dpi=120)
+        fig.patch.set_facecolor("white")
         try:
             im, _cn = mne.viz.plot_topomap(
-                values, self._info, axes=ax, cmap="RdBu_r", show=False,
+                values,
+                self._info,
+                axes=ax,
+                cmap=cmap,
+                contours=6,
+                show=False,
             )
-            cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-            cbar.set_label(f"DE ({band})")
+            cbar = fig.colorbar(
+                im, ax=ax, fraction=0.046, pad=0.04, shrink=0.85,
+            )
+            cbar.set_label(f"DE ({band})", fontsize=9, fontweight="bold")
+            cbar.ax.tick_params(labelsize=8)
         except Exception as exc:
             logger.warning("MNE plot_topomap failed: %s — using fallback", exc)
             plt.close(fig)
             return self._fallback_heatmap(de_features, band)
 
-        ax.set_title(f"DE — {band} ({self.n_channels}ch)")
+        ax.set_title(
+            f"DE — {band} ({self.n_channels}ch)",
+            fontsize=11, fontweight="bold", pad=8,
+        )
         if annotate_asymmetry and band == "alpha":
             self._annotate_asymmetry(ax, de_features)
-        fig.tight_layout()
+        fig.tight_layout(pad=1.0)
         self._prev_fig = fig
         return fig
 
     def _fallback_heatmap(self, de_features: np.ndarray, band: str | None = None) -> Figure:
-        """Simple bar chart fallback when MNE is unavailable."""
+        """Styled bar chart fallback when MNE is unavailable."""
         band = band or self._current_band
         band_idx = BAND_IDX[band]
         values = de_features[:, band_idx]
+        cmap_name = _BAND_CMAP.get(band, "RdBu_r")
+        cmap = plt.get_cmap(cmap_name)
 
-        fig, ax = plt.subplots(figsize=(4, 4), dpi=100)
-        ax.bar(range(len(values)), values, color="steelblue", alpha=0.7)
-        ax.set_xlabel("Channel index")
-        ax.set_ylabel(f"DE ({band})")
-        ax.set_title(f"{band} band DE (bar chart fallback)")
+        v_min, v_max = float(values.min()), float(values.max())
+        v_range = v_max - v_min if v_max > v_min else 1.0
+        normed = (values - v_min) / v_range
+        colors = [cmap(float(v)) for v in normed]
+
+        fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=120)
+        fig.patch.set_facecolor("white")
+        ax.bar(range(len(values)), values, color=colors, edgecolor="white", linewidth=0.5)
+
+        ax.set_xlabel("Channel", fontsize=9)
+        ax.set_ylabel(f"DE ({band})", fontsize=9)
+        ax.set_title(f"DE — {band} ({self.n_channels}ch)", fontsize=11, fontweight="bold")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
         if band == "alpha":
             self._annotate_asymmetry(ax, de_features)
         fig.tight_layout()
@@ -162,15 +182,38 @@ class TopoMapPlot:
         return fig
 
     def placeholder(self) -> Figure:
-        """Return an empty placeholder figure."""
         if self._prev_fig is not None:
             plt.close(self._prev_fig)
-
-        fig, ax = plt.subplots(1, 1, figsize=(4, 4), dpi=100)
+        fig, ax = plt.subplots(1, 1, figsize=(4.2, 4.2), dpi=120)
+        fig.patch.set_facecolor("white")
         ax.text(
             0.5, 0.5, "Awaiting data\u2026",
-            ha="center", va="center", fontsize=12, color="#888888",
+            ha="center", va="center", fontsize=13, color="#aaaaaa",
+            transform=ax.transAxes, style="italic",
+        )
+        ax.set_axis_off()
+        fig.tight_layout()
+        self._prev_fig = fig
+        return fig
+
+    def _sensor_disconnected(self, band: str, nan_ratio: float) -> Figure:
+        """Warning figure when too many channels report NaN."""
+        fig, ax = plt.subplots(1, 1, figsize=(4.2, 4.2), dpi=120)
+        fig.patch.set_facecolor("#fff3cd")
+        ax.set_facecolor("#fff3cd")
+        ax.text(
+            0.5, 0.55,
+            "\u26a0  Sensor Disconnected",
+            ha="center", va="center", fontsize=14,
+            fontweight="bold", color="#856404",
             transform=ax.transAxes,
+        )
+        ax.text(
+            0.5, 0.38,
+            f"{nan_ratio * 100:.0f}% of channels report NaN\n"
+            f"Band: {band} | Check electrode contact",
+            ha="center", va="center", fontsize=9,
+            color="#856404", transform=ax.transAxes,
         )
         ax.set_axis_off()
         fig.tight_layout()
@@ -178,11 +221,9 @@ class TopoMapPlot:
         return fig
 
     def get_band_list(self) -> list[str]:
-        """Return the list of available frequency band names."""
         return list(_BAND_NAMES)
 
     def _compute_frontal_asymmetry(self, de: np.ndarray) -> float | None:
-        """Davidson-style frontal alpha asymmetry: F4 - F3."""
         alpha_idx = BAND_IDX["alpha"]
         f3 = next((i for i, c in enumerate(self._ch_names) if c.upper() in ("F3", "F 3")), None)
         f4 = next((i for i, c in enumerate(self._ch_names) if c.upper() in ("F4", "F 4")), None)
@@ -195,18 +236,21 @@ class TopoMapPlot:
         if asym is None:
             return
         direction = "R > L" if asym > 0 else "L > R"
-        color = "#27AE60" if asym > 0 else "#2E86C1"
+        valence_hint = "(approach ↑)" if asym > 0 else "(withdrawal ↑)"
+        bg_color = "#d4edda" if asym > 0 else "#cce5ff"
+        border_color = "#28a745" if asym > 0 else "#007bff"
         ax.text(
-            0.02,
-            0.02,
-            f"Frontal alpha asymmetry: {direction}\n(Delta DE = {asym:+.3f})",
+            0.02, 0.02,
+            f"Frontal \u03b1 asymmetry: {direction}\n"
+            f"\u0394DE = {asym:+.3f}  {valence_hint}",
             transform=ax.transAxes,
-            fontsize=7.5,
-            color=color,
-            fontweight="bold",
+            fontsize=8, fontweight="bold",
+            color="#333333",
             bbox={
-                "boxstyle": "round,pad=0.3",
-                "facecolor": "lightyellow",
-                "alpha": 0.8,
+                "boxstyle": "round,pad=0.4",
+                "facecolor": bg_color,
+                "edgecolor": border_color,
+                "alpha": 0.92,
+                "linewidth": 1.5,
             },
         )

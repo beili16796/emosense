@@ -70,6 +70,7 @@ class ModelManager:
         self._config_path = Path(config_path)
         self._model_configs: dict[str, dict[str, Any]] = {}
         self._models: dict[str, BaseModel] = {}
+        self._loaded_real_weights: dict[str, bool] = {}
         self._active_name: str | None = None
 
         self._load_all()
@@ -102,7 +103,7 @@ class ModelManager:
         """Whether a configured checkpoint exists on disk."""
         cfg = self._model_configs.get(name, {})
         ckpt = Path(cfg.get("checkpoint", ""))
-        return ckpt.exists()
+        return self._loaded_real_weights.get(name, ckpt.exists())
 
     def get_model_info(self) -> list[dict[str, Any]]:
         """Return model metadata for the UI."""
@@ -195,9 +196,20 @@ class ModelManager:
 
         ckpt = Path(cfg.get("checkpoint", ""))
         if ckpt.exists():
-            model.load(str(ckpt))
-            logger.info("Loaded checkpoint for %s from %s", name, ckpt)
+            try:
+                model.load(str(ckpt))
+                self._loaded_real_weights[name] = True
+                logger.info("Loaded checkpoint for %s from %s", name, ckpt)
+            except Exception as exc:
+                self._loaded_real_weights[name] = False
+                logger.warning(
+                    "Could not load checkpoint for %s from %s; using random weights: %s",
+                    name,
+                    ckpt,
+                    exc,
+                )
         else:
+            self._loaded_real_weights[name] = False
             logger.warning(
                 "No checkpoint found for %s at %s; using random weights",
                 name,

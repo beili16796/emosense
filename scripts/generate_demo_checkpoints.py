@@ -32,6 +32,7 @@ MODEL_CONFIGS: list[dict[str, Any]] = [
         "params": {
             "n_classes": 2,
             "input_type": "de",
+            "n_channels": 32,
             "hidden_size": 64,
             "n_layers": 2,
             "dropout": 0.3,
@@ -60,8 +61,8 @@ MODEL_CONFIGS: list[dict[str, Any]] = [
         "name": "Transformer-MM",
         "registry_name": "Transformer-MM",
         "params": {
-            "n_classes": 2,
-            "n_channels": 32,
+            "n_classes": 5,
+            "n_channels": 62,
             "n_bands": 5,
             "n_peripheral_feat": 8,
             "d_model": 64,
@@ -152,7 +153,7 @@ def _generate_data(
         return x_train, y_train
 
     if shape == "multimodal_transformer":
-        eeg = rng.standard_normal((n_samples, 32, 5)).astype(np.float32)
+        eeg = rng.standard_normal((n_samples, 62, 5)).astype(np.float32)
         peripheral = rng.standard_normal((n_samples, 8)).astype(np.float32)
         return {"eeg": eeg, "peripheral": peripheral}, y_train
 

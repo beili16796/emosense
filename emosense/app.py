@@ -25,6 +25,16 @@ logger = logging.getLogger(__name__)
 
 BACKEND_URL = "http://localhost:8000"
 
+CUSTOM_CSS = """
+#stimulus-video-reference .source-selection,
+#stimulus-video-reference [data-testid="source-select"] {
+    display: none !important;
+}
+#stimulus-video-reference .video-container {
+    padding-bottom: 0 !important;
+}
+"""
+
 DEAP_CHANNELS: list[str] = [
     "Fp1", "AF3", "F3", "F7", "FC5", "FC1", "C3", "T7",
     "CP5", "CP1", "P3", "P7", "PO3", "O1", "Oz", "Pz",
@@ -203,7 +213,7 @@ def on_analyze(
             timeout=5.0,
         )
         resp.raise_for_status()
-        mode = "Live streaming" if stream_speed > 0 else "Processing"
+        mode = "Timed replay" if stream_speed > 0 else "Processing"
         return f"{mode}\u2026 (task {task_id})", 0
     except Exception as exc:
         return f"Failed to start: {exc}", 0
@@ -459,6 +469,7 @@ def create_demo() -> gr.Blocks:
     with gr.Blocks(
         theme=gr.themes.Soft(),
         title="EmoSense \u2014 Physiological Emotion Analysis",
+        css=CUSTOM_CSS,
     ) as demo:
         gr.Markdown("# EmoSense \u2014 Physiological Emotion Analysis")
 
@@ -466,12 +477,13 @@ def create_demo() -> gr.Blocks:
             gr.Markdown(
                 "**Welcome to EmoSense!**\n\n"
                 "1. Upload a physiological signal file (.mat, .dat, .npz, or .csv)\n"
-                "2. Optionally upload the stimulus video that was shown during recording\n"
+                "2. Optionally attach a stimulus video as a local visual reference\n"
                 "3. Select a model from the dropdown\n"
-                "4. Click **Start Analysis** — start the video playback at the same time\n"
-                "5. Watch all panels update in sync: V-A trajectory, topomap, attention radar, waveform\n"
+                "4. Click **Start Analysis** and choose instant or timed replay\n"
+                "5. Watch all panels update: V-A trajectory, topomap, attention radar, waveform\n"
                 "6. The \u23f1 timestamp display tracks the current analysis window\n\n"
-                "*Session duration: ~10 minutes*"
+                "*Main review path: dataset replay with simulated real-time pacing. "
+                "Optional LSL receivers are available in the backend module for hardware demos.*"
             )
 
         uploaded_task_id = gr.State(value="")
@@ -482,7 +494,7 @@ def create_demo() -> gr.Blocks:
         with gr.Row():
             # LEFT PANEL
             with gr.Column(scale=1, min_width=260):
-                gr.Markdown("### Signal & Stimulus")
+                gr.Markdown("### Signal & Reference Media")
                 file_input = gr.File(
                     label="Upload Signal File",
                     file_types=[".dat", ".mat", ".npz", ".csv", ".bdf"],
@@ -495,8 +507,10 @@ def create_demo() -> gr.Blocks:
                     lines=2,
                 )
                 gr.Video(
-                    label="\U0001f3ac Stimulus Video (optional)",
-                    height=160,
+                    label="Stimulus Video Reference",
+                    sources=["upload"],
+                    height=220,
+                    elem_id="stimulus-video-reference",
                 )
 
                 gr.Markdown("### Parameters")
@@ -525,9 +539,9 @@ def create_demo() -> gr.Blocks:
                 )
 
                 stream_speed = gr.Slider(
-                    label="Stream Speed (sec/window)",
+                    label="Replay Speed (sec/window)",
                     minimum=0.0, maximum=2.0, value=0.5, step=0.1,
-                    info="0 = instant, 0.5 = ~2 windows/sec (BCI simulation)",
+                    info="0 = instant, 0.5 = ~2 windows/sec timed replay",
                 )
 
                 with gr.Row():

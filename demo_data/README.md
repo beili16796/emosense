@@ -1,15 +1,18 @@
 # Demo Data
 
 Synthetic signal files for testing EmoSense without real DEAP/SEED-V data.
+Large generated `.mat` and `.npz` files are not required to be committed; create
+them locally with `scripts/create_test_mat.py`.
 
 ## Files
 
 | File | Format | Trials | Channels | Description |
 |------|--------|--------|----------|-------------|
-| `test_deap.mat` | DEAP .mat | 4 | 32 EEG + 8 peripheral | Random noise — fast smoke-test only |
-| `test_deap_realistic.mat` | DEAP .mat | 4 | 32 EEG + 8 peripheral | Realistic: alpha-band dominance, frontal asymmetry, 1/f spectral slope, GSR ramps |
-| `test_seedv.npz` | SEED-V .npz | variable | 62 (DE) | Random noise — fast smoke-test only |
-| `test_seedv_realistic.npz` | SEED-V .npz | 10 × 50 windows | 62 × 5 (DE) | Realistic: emotion-template DE profiles (happy=high gamma, sad=high delta, etc.) |
+| `test_signal.csv` | CSV | 1 stream | generic | Tiny committed smoke-test fixture |
+| `test_deap.mat` | DEAP .mat | 4 | 32 EEG + 8 peripheral | Generated random-noise smoke test |
+| `test_deap_realistic.mat` | DEAP .mat | 4 | 32 EEG + 8 peripheral | Generated realistic frontal-asymmetry demo |
+| `test_seedv.npz` | SEED-V .npz | variable | 62 (DE) | Generated random-noise smoke test |
+| `test_seedv_realistic.npz` | SEED-V .npz | 10 x 50 windows | 62 x 5 (DE) | Generated emotion-template DE profiles |
 
 ## Realistic DEAP (`test_deap_realistic.mat`)
 
@@ -55,7 +58,8 @@ python scripts/create_test_mat.py --format seedv --realistic --output demo_data/
 
 ## Usage
 
-1. Start EmoSense: `python -m emosense.app`
-2. Open http://localhost:7860
-3. Upload a file, select a model, click "Start Analysis"
-4. Use realistic files for meaningful visualisation demos
+1. Generate the desired demo file if it is not already present.
+2. Start EmoSense: `python -m emosense.app`
+3. Open http://localhost:7860
+4. Upload a file, select a model, click "Start Analysis"
+5. Use realistic files for meaningful visualisation demos

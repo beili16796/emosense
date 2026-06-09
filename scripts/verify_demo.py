@@ -57,7 +57,7 @@ def _make_dgcnn_input() -> np.ndarray:
 
 def _make_transformer_mm_input() -> dict[str, np.ndarray]:
     return {
-        "eeg": np.random.randn(1, 32, 5).astype(np.float32),
+        "eeg": np.random.randn(1, 62, 5).astype(np.float32),
         "peripheral": np.random.randn(1, 8).astype(np.float32),
     }
 
@@ -86,8 +86,8 @@ SPECS: list[VerifySpec] = [
         name="CNN-LSTM",
         registry_name="CNN-LSTM",
         params={
-            "n_classes": 2, "input_type": "de", "hidden_size": 64,
-            "n_layers": 2, "dropout": 0.3,
+            "n_classes": 2, "input_type": "de", "n_channels": 32,
+            "hidden_size": 64, "n_layers": 2, "dropout": 0.3,
         },
         checkpoint="cnn_lstm_demo.pt",
         make_input=_make_cnn_lstm_input,
@@ -106,7 +106,7 @@ SPECS: list[VerifySpec] = [
         name="Transformer-MM",
         registry_name="Transformer-MM",
         params={
-            "n_classes": 2, "n_channels": 32, "n_bands": 5,
+            "n_classes": 5, "n_channels": 62, "n_bands": 5,
             "n_peripheral_feat": 8, "d_model": 64, "nhead": 4, "n_layers": 2,
         },
         checkpoint="transformer_mm_demo.pt",

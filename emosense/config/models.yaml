@@ -10,6 +10,7 @@ models:
     params:
       n_classes: 2
       input_type: de
+      n_channels: 32
       hidden_size: 64
       n_layers: 2
       dropout: 0.3

@@ -18,7 +18,7 @@ build/
 
 # IDE
 .idea/
-.vvscode/
+.vscode/
 
 # Demo / experiment outputs
 results/

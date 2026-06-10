@@ -29,7 +29,9 @@ jobs:
           pip install pytest ruff
 
       - name: Lint with ruff
-        run: ruff check emosense/ tests/
+        run: python -m ruff check emosense/ tests/
 
       - name: Run tests
-        run: pytest tests/test_backend.py tests/test_file_parser.py tests/test_visualization.py -q
+        env:
+          PYTHONPATH: .:emokit_stub
+        run: python -m pytest tests/test_backend.py tests/test_file_parser.py tests/test_visualization.py -q

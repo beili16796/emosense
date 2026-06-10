@@ -599,7 +599,7 @@ def create_demo() -> gr.Blocks:
                 )
 
         # ---- Timer for polling -----------------------------------------------
-        timer = gr.Timer(every=0.5)
+        timer = gr.Timer(0.5)
         timer.tick(
             fn=poll_updates,
             inputs=[uploaded_task_id, results_cursor, band_radio, estimated_segments],

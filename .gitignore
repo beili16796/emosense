@@ -26,3 +26,6 @@ checkpoints/
 figures/
 *.pt
 *.pth
+demo_data/*.mat
+demo_data/*.npz
+demo_data/*.mp4

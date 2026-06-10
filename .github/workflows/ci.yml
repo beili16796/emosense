@@ -16,12 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check out EmoKit
-        uses: actions/checkout@v4
-        with:
-          repository: beili16796/emokit
-          path: external/emokit
-
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
@@ -30,7 +24,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e external/emokit
+          pip install -e emokit_stub
           pip install -r requirements.txt
           pip install pytest ruff
 
@@ -39,5 +33,5 @@ jobs:
 
       - name: Run tests
         env:
-          PYTHONPATH: external/emokit
+          PYTHONPATH: emokit_stub
         run: pytest tests/test_backend.py tests/test_file_parser.py tests/test_visualization.py -q

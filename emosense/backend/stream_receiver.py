@@ -17,10 +17,13 @@ import numpy as np
 
 try:
     import pylsl  # type: ignore[import-untyped]
-
-    _HAS_PYLSL = True
-except ImportError:
+except Exception as exc:  # pylsl may fail if the native liblsl binary is absent.
+    pylsl = None  # type: ignore[assignment]
+    _PYLSL_IMPORT_ERROR = exc
     _HAS_PYLSL = False
+else:
+    _PYLSL_IMPORT_ERROR = None
+    _HAS_PYLSL = True
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +67,15 @@ class LSLReceiver(BaseReceiver):
 
     def __init__(self, buffer_seconds: float = 10.0) -> None:
         if not _HAS_PYLSL:
+            detail = (
+                f" Original import error: {_PYLSL_IMPORT_ERROR}"
+                if _PYLSL_IMPORT_ERROR is not None
+                else ""
+            )
             raise ImportError(
                 "pylsl is required for LSLReceiver. "
-                "Install it with: pip install pylsl",
+                "Install it with: pip install pylsl."
+                f"{detail}",
             )
         self._buffer_seconds = buffer_seconds
         self._inlets: dict[str, Any] = {}

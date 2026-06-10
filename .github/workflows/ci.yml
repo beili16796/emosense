@@ -32,6 +32,4 @@ jobs:
         run: ruff check emosense/ tests/
 
       - name: Run tests
-        env:
-          PYTHONPATH: emokit_stub
         run: pytest tests/test_backend.py tests/test_file_parser.py tests/test_visualization.py -q
